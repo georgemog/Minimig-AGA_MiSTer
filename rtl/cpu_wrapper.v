@@ -69,6 +69,9 @@ module cpu_wrapper
 	output            toccata_ena,
 	output reg  [7:0] toccata_base,
 
+	output            a2065_ena,
+	output reg  [7:0] a2065_base,
+
 	output reg  [1:0] cpustate,
 	output reg  [3:0] cacr,
 	output reg [31:0] nmi_addr
@@ -355,6 +358,7 @@ end
 ///////////////////// AUTOCONFIG ////////////////////////////
 
 reg       ac_toccata;
+reg       ac_a2065;
 reg [2:0] ac_memcard;
 reg [3:0] autocfg_data;
 
@@ -393,7 +397,34 @@ always @(*) begin
 			6'hb: autocfg_data = 4'b1011;
 			default: ;
 		endcase
-	end 
+	end
+	// A2065 Ethernet (Commodore, mfr=0x0202, product=0x70)
+	else if(ac_a2065) begin
+		case (chip_addr[6:1])
+			6'h0: autocfg_data = 4'b1100; // Zorro-II card, no link, no ROM
+			6'h1: autocfg_data = 4'b0001; // size 64KB
+			// Inverted from here on
+			6'h2: autocfg_data = 4'b1000; // er_Product high nibble
+			6'h3: autocfg_data = 4'b1111; // er_Product low nibble -> 0x70
+			6'h4: autocfg_data = 4'b1111; // er_Flags high
+			6'h5: autocfg_data = 4'b1111; // er_Flags low
+			6'h8: autocfg_data = 4'b1111; // er_Manufacturer high high
+			6'h9: autocfg_data = 4'b1101; // er_Manufacturer high low
+			6'ha: autocfg_data = 4'b1111; // er_Manufacturer low high
+			6'hb: autocfg_data = 4'b1101; // er_Manufacturer low low -> 0x0202
+			6'hc: autocfg_data = 4'b1101; // serial byte 0 high (MAC[2]=0x02)
+			6'hd: autocfg_data = 4'b1101; // serial byte 0 low
+			6'he: autocfg_data = 4'b1000; // serial byte 1 high (MAC[3]=0x70)
+			6'hf: autocfg_data = 4'b1111; // serial byte 1 low
+			6'h10: autocfg_data = 4'b1000; // serial byte 2 high (MAC[4]=0x70)
+			6'h11: autocfg_data = 4'b1111; // serial byte 2 low
+			6'h12: autocfg_data = 4'b1000; // serial byte 3 high (MAC[5]=0x70)
+			6'h13: autocfg_data = 4'b1111; // serial byte 3 low
+			6'h14: autocfg_data = 4'b1111; // er_InitDiagVec
+			6'h15: autocfg_data = 4'b1111; // er_InitDiagVec
+			default: ;
+		endcase
+	end
 	// Zorro III RAM 128MB/256MB/384MB
 	else if(ac_memcard[2]) begin
 		case (chip_addr[6:1])
@@ -412,7 +443,7 @@ always @(*) begin
 	end
 end
 
-wire sel_autoconfig = (chip_addr[23:16] == 8'b11101000) && (ac_memcard || ac_toccata); //$E80000 - $E8FFFF
+wire sel_autoconfig = (chip_addr[23:16] == 8'b11101000) && (ac_memcard || ac_toccata || ac_a2065); //$E80000 - $E8FFFF
 
 reg       z2ram_ena;
 reg [4:0] z3ram_base0;
@@ -426,6 +457,7 @@ always @(posedge clk) begin
 	if (~reset | ~reset_out) begin
 		ac_memcard  <= cpucfg[1] ? fastramcfg : fastramcfg[2] ? 3'd3 : {1'b0, fastramcfg[1:0]};
 		ac_toccata  <= 1;
+		ac_a2065    <= 1;
 		z2ram_ena   <= 0;
 		z3ram_ena0  <= 0;
 		z3ram_ena1  <= 0;
@@ -445,6 +477,12 @@ always @(posedge clk) begin
 				ac_toccata<=0;
 			end		
 		end
+		else if(ac_a2065) begin
+			if (chip_addr[6:1] == 6'b100100) begin // Register 0x48 - config, A2065 Ethernet
+				a2065_base <= cpu_dout[7:0];
+				ac_a2065<=0;
+			end
+		end
 		else if(ac_memcard[2]) begin
 			if(chip_addr[6:1] == 6'b100010) begin // Register 0x44, assign base address to ZIII RAM.
 				if(~ac_memcard[1]) begin
@@ -463,5 +501,6 @@ always @(posedge clk) begin
 end
 
 assign toccata_ena = ~ac_toccata;
+assign a2065_ena   = ~ac_a2065;
 
 endmodule

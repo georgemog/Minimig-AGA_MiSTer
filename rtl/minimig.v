@@ -248,6 +248,10 @@ module minimig
 	output [15:0] toccata_aud_left,
 	output [15:0] toccata_aud_right,
 
+	// A2065 Ethernet
+	input         a2065_ena,
+	input   [7:0] a2065_base,
+
 	//user i/o
 	output  [1:0] cpucfg,
 	output  [2:0] cachecfg,
@@ -316,7 +320,8 @@ wire        sel_reg;				//chip register select
 wire        sel_rtc;
 wire        sel_cia_a;			//cia A select
 wire        sel_cia_b;			//cia B select
-wire        sel_toccata;
+	wire        sel_toccata;
+	wire        sel_a2065;
 wire        int2;					//intterrupt 2
 wire        int3;					//intterrupt 3 
 wire        int6;					//intterrupt 6
@@ -784,6 +789,8 @@ gary GARY1
 	.hdc_ena(ide_ena & ~ide_fast), // Gayle decoding enable	
 	.toccata_ena(toccata_ena),
 	.toccata_base(toccata_base),
+	.a2065_ena(a2065_ena),
+	.a2065_base(a2065_base),
 	.ram_rd(ram_rd),
 	.ram_hwr(ram_hwr),
 	.ram_lwr(ram_lwr),
@@ -802,6 +809,7 @@ gary GARY1
 	.sel_gayle(sel_gayle),
 	.sel_rtc(sel_rtc),
 	.sel_toccata(sel_toccata),
+	.sel_a2065(sel_a2065),
 	.reset(reset),
 	.clk(clk),
 	.rom_readonly(rom_readonly),
@@ -893,13 +901,35 @@ toccata #(
 
 //-------------------------------------------------------------------------------------
 
+// A2065 Ethernet boardram
+
+wire [15:0] a2065_boardram_out;
+a2065_boardram a2065_boardram_inst (
+	.clk          (clk),
+	.rst_n        (~reset),
+	.cpu_addr     (cpu_address_out[23:1]),
+	.cpu_data_in  (cpu_data_out),
+	.cpu_data_out (a2065_boardram_out),
+	.cpu_rd       (cpu_rd),
+	.cpu_hwr      (cpu_hwr),
+	.cpu_lwr      (cpu_lwr),
+	.sel          (sel_a2065),
+	.arm_addr     (14'd0),
+	.arm_data_in  (16'd0),
+	.arm_wr       (1'b0),
+	.arm_sel      (1'b0)
+);
+
+//-------------------------------------------------------------------------------------
+
 //data multiplexer
 assign cpu_data_in[15:0]= gary_data_out[15:0]
 							 | cia_data_out[15:0]
 							 | gayle_data_out[15:0]
 							 | cart_data_out[15:0]
 							 | rtc_out
-							 | toccata_out;
+							 | toccata_out
+							 | a2065_boardram_out;
 
 assign custom_data_out[15:0] = agnus_data_out[15:0]
 							 | paula_data_out[15:0]

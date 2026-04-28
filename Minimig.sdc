@@ -17,6 +17,22 @@ set_false_path -from {emu|minimig|USERIO1|ide_config*}
 set_false_path -from {emu|minimig|USERIO1|bootrom}
 set_false_path -from {emu|minimig|CPU1|halt}
 
+# A2065 boardram: 1-cycle synchronous BRAM read latency
+# Quartus infers ram[] as altsyncram (ram_rtl_0), absorbing ram_rd into the
+# block RAM — so ram_rd is no longer a separate register.  Constrain the full
+# hierarchy through the inferred M10K instead.
+set_multicycle_path -from {emu|minimig|a2065_boardram_inst|*} \
+                    -to   {emu|minimig|a2065_boardram_inst|*} -setup 2
+set_multicycle_path -from {emu|minimig|a2065_boardram_inst|*} \
+                    -to   {emu|minimig|a2065_boardram_inst|*} -hold 1
+
+# yc_out chroma LUT: marginal path pushed into violation by boardram routing congestion
+# (Step 6 slack was +0.288ns; boardram BRAM degraded placement → -0.471ns)
+set_multicycle_path -from {yc_out|chroma_LUT_BURST[*]} \
+                    -to   {yc_out|phase[*].u[*]} -setup 2
+set_multicycle_path -from {yc_out|chroma_LUT_BURST[*]} \
+                    -to   {yc_out|phase[*].u[*]} -hold 1
+
 #these constraints aren't really correct, but help fitting.
 #28MHz pixel clock might be affected when scandoubler fx is used.
 set_multicycle_path -to {*Hq2x*} -setup 2

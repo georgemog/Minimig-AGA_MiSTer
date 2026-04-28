@@ -435,6 +435,8 @@ wire        ramshared;
 
 wire [7:0] toccata_base;
 wire toccata_ena;
+wire a2065_ena;
+wire [7:0] a2065_base;
 
 cpu_wrapper cpu_wrapper
 (
@@ -470,6 +472,8 @@ cpu_wrapper cpu_wrapper
 	.bootrom      (bootrom         ),
 
 	.toccata_ena  (toccata_ena     ),
+	.a2065_ena    (a2065_ena       ),
+	.a2065_base   (a2065_base      ),
 	.toccata_base (toccata_base    ),
 	
 	.ramsel       (ram_sel         ),
@@ -768,6 +772,8 @@ minimig minimig
 	//toccata soundcard
 	.toccata_ena  (toccata_ena),
 	.toccata_base (toccata_base),
+	.a2065_ena  (a2065_ena),
+	.a2065_base (a2065_base),
 	.toccata_aud_left (toccata_aud_left),
 	.toccata_aud_right(toccata_aud_right),
 	
