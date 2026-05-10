@@ -191,9 +191,7 @@ module a2065_ddr3_mailbox (
             end
 
             S_RAM_CAPTURE: begin
-                if (req_sync1) begin
-                    state <= S_IDLE;
-                end else if (!avl_waitrequest) begin
+                if (!avl_waitrequest) begin
                     state <= S_RAM_WAIT;
                 end else begin
                     avl_address    <= DDR3_BASE + MBX_RAM_REQ;
@@ -203,9 +201,7 @@ module a2065_ddr3_mailbox (
             end
 
             S_RAM_WAIT: begin
-                if (req_sync1) begin
-                    state <= S_IDLE;
-                end else if (avl_readdatavalid) begin
+                if (avl_readdatavalid) begin
                     if (avl_readdata[0]) begin
                         bram_addr_r <= avl_readdata[16:2];
                         bram_be_r   <= 2'b11;
