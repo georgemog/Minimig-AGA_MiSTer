@@ -266,7 +266,22 @@ module minimig
 	input         ide_write,
 	input  [15:0] ide_writedata,
 	input         ide_read,
-	output [15:0] ide_readdata
+	output [15:0] ide_readdata,
+
+	// A2065 ARM bridge
+	input  [15:0] a2065_bridge_result,
+	input         a2065_bridge_done,
+	output [15:0] a2065_bridge_data,
+	output [7:0]  a2065_bridge_addr_off,
+	output        a2065_bridge_rw,
+	output        a2065_bridge_new_req,
+	input         a2065_bram_clk,
+	input  [14:1] a2065_bram_addr,
+	input  [15:0] a2065_bram_wdata,
+	input         a2065_bram_wr,
+	input  [1:0]  a2065_bram_be,
+	output [15:0] a2065_bram_rdata,
+	input         a2065_int2
 );
 
 
@@ -326,6 +341,13 @@ wire        int2;					//intterrupt 2
 wire        int3;					//intterrupt 3 
 wire        int6;					//intterrupt 6
 wire        int6_toccata;
+wire        a2065_int2_sync;
+reg         a2065_int2_s1, a2065_int2_s2;
+always @(posedge clk) begin
+    a2065_int2_s1 <= a2065_int2;
+    a2065_int2_s2 <= a2065_int2_s1;
+end
+assign a2065_int2_sync = a2065_int2_s2;
 wire        freeze;				//Action Replay freeze button
 wire        _fire0;				//joystick 1 fire signal to cia A
 wire        _fire1;				//joystick 2 fire signal to cia A
@@ -493,7 +515,7 @@ paula PAULA1
 	.sof(sof),
 	.strhor(strhor_paula),
 	.vblint(vbl_int),
-	.int2(int2|(ide_fast ? ide_ext_irq : gayle_irq)),
+	.int2(int2|(ide_fast ? ide_ext_irq : gayle_irq)|a2065_int2_sync),
 	.int3(int3),
 	.int6(int6 | int6_toccata),
 	._ipl(_iplx),
@@ -668,7 +690,7 @@ minimig_m68k_bridge CPU1
 	.dbr(dbr),
 	.dbs(dbs),
 	.xbs(xbs),
-	.nrdy(gayle_nrdy & rd_cyc),
+	.nrdy((gayle_nrdy & rd_cyc) | regs_nrdy),
 	.bls(bls),
 	.memory_config(memory_config[3:0]),
 	._as(_cpu_as),
@@ -900,10 +922,10 @@ toccata #(
 );
 
 //-------------------------------------------------------------------------------------
-
-// A2065 Ethernet boardram
+// A2065 Ethernet: boardram (BRAM) + chip registers (local CSR)
 
 wire [15:0] a2065_boardram_out;
+
 a2065_boardram a2065_boardram_inst (
 	.clk          (clk),
 	.rst_n        (~reset),
@@ -914,10 +936,38 @@ a2065_boardram a2065_boardram_inst (
 	.cpu_hwr      (cpu_hwr),
 	.cpu_lwr      (cpu_lwr),
 	.sel          (sel_a2065),
-	.arm_addr     (14'd0),
-	.arm_data_in  (16'd0),
-	.arm_wr       (1'b0),
-	.arm_sel      (1'b0)
+	.arm_addr     (a2065_bram_addr),
+	.arm_data_in  (a2065_bram_wdata),
+	.arm_rdata    (a2065_bram_rdata),
+	.arm_wr       (a2065_bram_wr),
+	.arm_be       (a2065_bram_be),
+	.clk_b        (a2065_bram_clk)
+);
+
+wire [15:0] a2065_regs_dout;
+wire        regs_nrdy;
+
+a2065_registers #(.BRIDGE_LOCAL(0)) a2065_regs_inst (
+	.clk            (clk),
+	.rst_n          (~reset),
+	.card_base      (a2065_base),
+	.card_configured(a2065_ena),
+	.cpu_addr       ({cpu_address_out, 1'b0}),
+	.cpu_rw         (cpu_r_w),
+	.cpu_as_n       (_cpu_as),
+	.cpu_ds_n       (_cpu_uds & _cpu_lds),
+	.cpu_data_in    (cpu_data_out),
+	.cpu_data_out   (a2065_regs_dout),
+	.cpu_dtack_n    (),
+	.cpu_berr_n     (),
+	.bridge_data    (a2065_bridge_data),
+	.bridge_addr_off(a2065_bridge_addr_off),
+	.bridge_rw      (a2065_bridge_rw),
+	.bridge_new_req (a2065_bridge_new_req),
+	.bridge_done    (a2065_bridge_done),
+	.bridge_result  (a2065_bridge_result),
+	.bridge_done_clr(),
+	.regs_nrdy      (regs_nrdy)
 );
 
 //-------------------------------------------------------------------------------------
@@ -929,7 +979,8 @@ assign cpu_data_in[15:0]= gary_data_out[15:0]
 							 | cart_data_out[15:0]
 							 | rtc_out
 							 | toccata_out
-							 | a2065_boardram_out;
+							 | a2065_boardram_out
+							 | a2065_regs_dout;
 
 assign custom_data_out[15:0] = agnus_data_out[15:0]
 							 | paula_data_out[15:0]

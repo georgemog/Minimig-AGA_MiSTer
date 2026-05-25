@@ -18,9 +18,6 @@ set_false_path -from {emu|minimig|USERIO1|bootrom}
 set_false_path -from {emu|minimig|CPU1|halt}
 
 # A2065 boardram: 1-cycle synchronous BRAM read latency
-# Quartus infers ram[] as altsyncram (ram_rtl_0), absorbing ram_rd into the
-# block RAM — so ram_rd is no longer a separate register.  Constrain the full
-# hierarchy through the inferred M10K instead.
 set_multicycle_path -from {emu|minimig|a2065_boardram_inst|*} \
                     -to   {emu|minimig|a2065_boardram_inst|*} -setup 2
 set_multicycle_path -from {emu|minimig|a2065_boardram_inst|*} \

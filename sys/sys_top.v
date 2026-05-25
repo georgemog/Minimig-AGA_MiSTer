@@ -634,12 +634,57 @@ sysmem_lite sysmem
 	.vbuf_write(vbuf_write),
 	.vbuf_readdata(vbuf_readdata),
 	.vbuf_readdatavalid(vbuf_readdatavalid),
-	.vbuf_read(vbuf_read)
+	.vbuf_read(vbuf_read),
+
+	// HPS-to-FPGA AXI bridge
+	.h2f_awvalid(h2f_awvalid),
+	.h2f_awready(h2f_awready),
+	.h2f_awaddr(h2f_awaddr),
+	.h2f_awid(h2f_awid),
+	.h2f_wvalid(h2f_wvalid),
+	.h2f_wready(h2f_wready),
+	.h2f_wdata(h2f_wdata),
+	.h2f_wstrb(h2f_wstrb),
+	.h2f_bready(h2f_bready),
+	.h2f_bvalid(h2f_bvalid),
+	.h2f_bresp(h2f_bresp),
+	.h2f_bid(h2f_bid),
+	.h2f_arvalid(h2f_arvalid),
+	.h2f_arready(h2f_arready),
+	.h2f_araddr(h2f_araddr),
+	.h2f_arid(h2f_arid),
+	.h2f_rready(h2f_rready),
+	.h2f_rvalid(h2f_rvalid),
+	.h2f_rdata(h2f_rdata),
+	.h2f_rresp(h2f_rresp),
+	.h2f_rid(h2f_rid)
 );
 
 wire [28:0] ram2_address;
 wire  [7:0] ram2_burstcount;
 wire  [7:0] ram2_byteenable;
+
+wire [1:0]  h2f_awvalid, h2f_awready, h2f_bresp, h2f_rresp;
+wire [29:0] h2f_awaddr, h2f_araddr;
+wire [31:0] h2f_wdata, h2f_rdata;
+wire [11:0] h2f_awid, h2f_bid, h2f_arid, h2f_rid;
+wire [7:0]  h2f_wstrb;
+wire        h2f_wvalid, h2f_wready, h2f_bready, h2f_bvalid;
+wire        h2f_arvalid, h2f_arready, h2f_rready, h2f_rvalid;
+
+wire [15:0] a2065_bridge_result;
+wire        a2065_bridge_done;
+wire [15:0] a2065_fpga_bridge_data;
+wire [7:0]  a2065_fpga_bridge_addr_off;
+wire        a2065_fpga_bridge_rw;
+wire        a2065_fpga_bridge_new_req;
+
+wire [14:1] a2065_arm_bram_addr;
+wire [15:0] a2065_arm_bram_wdata;
+wire        a2065_arm_bram_wr;
+wire [1:0]  a2065_arm_bram_be;
+wire [15:0] a2065_arm_bram_rdata;
+wire        a2065_mailbox_int2;
 wire        ram2_waitrequest;
 wire [63:0] ram2_readdata;
 wire [63:0] ram2_writedata;
@@ -648,19 +693,41 @@ wire        ram2_read;
 wire        ram2_write;
 wire  [7:0] ram2_bcnt;
 
+// Arbiter: ddr_svc (m0) + A2065 DDR3 test (m1)
+wire [28:0] arb_m0_address,    arb_m1_address;
+wire  [7:0] arb_m0_burstcount, arb_m1_burstcount;
+wire        arb_m0_read,       arb_m1_read;
+wire [63:0] arb_m0_readdata,   arb_m1_readdata;
+wire        arb_m0_readdatavalid, arb_m1_readdatavalid;
+wire [63:0] arb_m0_writedata,  arb_m1_writedata;
+wire  [7:0] arb_m0_byteenable, arb_m1_byteenable;
+wire        arb_m0_write,      arb_m1_write;
+wire        arb_m0_waitrequest, arb_m1_waitrequest;
+wire [28:0] arb_s_address;
+wire  [7:0] arb_s_burstcount;
+wire        arb_s_read, arb_s_write;
+wire [63:0] arb_s_readdata, arb_s_writedata;
+wire  [7:0] arb_s_byteenable;
+wire        arb_s_waitrequest, arb_s_readdatavalid;
+
+assign arb_s_readdata     = ram2_readdata;
+assign arb_s_readdatavalid= ram2_readdatavalid;
+assign arb_s_waitrequest  = ram2_waitrequest;
+
+// ddr_svc → arbiter master 0
 ddr_svc ddr_svc
 (
 	.clk(clk_audio),
 
-	.ram_waitrequest(ram2_waitrequest),
-	.ram_burstcnt(ram2_burstcount),
-	.ram_addr(ram2_address),
-	.ram_readdata(ram2_readdata),
-	.ram_read_ready(ram2_readdatavalid),
-	.ram_read(ram2_read),
-	.ram_writedata(ram2_writedata),
-	.ram_byteenable(ram2_byteenable),
-	.ram_write(ram2_write),
+	.ram_waitrequest(arb_m0_waitrequest),
+	.ram_burstcnt(arb_m0_burstcount),
+	.ram_addr(arb_m0_address),
+	.ram_readdata(arb_m0_readdata),
+	.ram_read_ready(arb_m0_readdatavalid),
+	.ram_read(arb_m0_read),
+	.ram_writedata(arb_m0_writedata),
+	.ram_byteenable(arb_m0_byteenable),
+	.ram_write(arb_m0_write),
 	.ram_bcnt(ram2_bcnt),
 
 `ifndef MISTER_DISABLE_ALSA
@@ -677,6 +744,80 @@ ddr_svc ddr_svc
 	.ch1_req(pal_req),
 	.ch1_ready(pal_wr)
 );
+
+// A2065 DDR3 mailbox → arbiter master 1
+a2065_ddr3_mailbox a2065_mailbox_inst (
+	.clk(clk_audio),
+	.rst_n(~reset),
+
+	.bridge_data(a2065_fpga_bridge_data),
+	.bridge_addr_off(a2065_fpga_bridge_addr_off),
+	.bridge_rw(a2065_fpga_bridge_rw),
+	.bridge_new_req(a2065_fpga_bridge_new_req),
+	.bridge_done(a2065_bridge_done),
+	.bridge_result(a2065_bridge_result),
+
+	.bram_addr(a2065_arm_bram_addr),
+	.bram_wdata(a2065_arm_bram_wdata),
+	.bram_wr(a2065_arm_bram_wr),
+	.bram_be(a2065_arm_bram_be),
+	.bram_rdata(a2065_arm_bram_rdata),
+
+	.a2065_int2(a2065_mailbox_int2),
+
+	.avl_address(arb_m1_address),
+	.avl_burstcount(arb_m1_burstcount),
+	.avl_read(arb_m1_read),
+	.avl_readdata(arb_m1_readdata),
+	.avl_readdatavalid(arb_m1_readdatavalid),
+	.avl_writedata(arb_m1_writedata),
+	.avl_byteenable(arb_m1_byteenable),
+	.avl_write(arb_m1_write),
+	.avl_waitrequest(arb_m1_waitrequest)
+);
+
+// Arbiter drives the actual f2sdram2 port
+avalon_arbiter #(
+	.ADDR_W(29), .DATA_W(64), .BURST_W(8), .BYTE_W(8)
+) f2sdram2_arb (
+	.clk(clk_audio),
+	.rst(reset),
+	.m0_address(arb_m0_address),
+	.m0_burstcount(arb_m0_burstcount),
+	.m0_read(arb_m0_read),
+	.m0_readdata(arb_m0_readdata),
+	.m0_readdatavalid(arb_m0_readdatavalid),
+	.m0_writedata(arb_m0_writedata),
+	.m0_byteenable(arb_m0_byteenable),
+	.m0_write(arb_m0_write),
+	.m0_waitrequest(arb_m0_waitrequest),
+	.m1_address(arb_m1_address),
+	.m1_burstcount(arb_m1_burstcount),
+	.m1_read(arb_m1_read),
+	.m1_readdata(arb_m1_readdata),
+	.m1_readdatavalid(arb_m1_readdatavalid),
+	.m1_writedata(arb_m1_writedata),
+	.m1_byteenable(arb_m1_byteenable),
+	.m1_write(arb_m1_write),
+	.m1_waitrequest(arb_m1_waitrequest),
+	.s_address(arb_s_address),
+	.s_burstcount(arb_s_burstcount),
+	.s_read(arb_s_read),
+	.s_readdata(arb_s_readdata),
+	.s_readdatavalid(arb_s_readdatavalid),
+	.s_writedata(arb_s_writedata),
+	.s_byteenable(arb_s_byteenable),
+	.s_write(arb_s_write),
+	.s_waitrequest(arb_s_waitrequest)
+);
+
+// Arbiter output → f2sdram2 port wires
+assign ram2_address    = arb_s_address;
+assign ram2_burstcount = arb_s_burstcount;
+assign ram2_read       = arb_s_read;
+assign ram2_writedata  = arb_s_writedata;
+assign ram2_byteenable = arb_s_byteenable;
+assign ram2_write      = arb_s_write;
 
 wire clk_pal = clk_audio;
 
@@ -1863,7 +2004,21 @@ emu emu
 	.UART_DSR(uart_dtr),
 
 	.USER_OUT(user_out),
-	.USER_IN(user_in)
+	.USER_IN(user_in),
+
+	.A2065_BRIDGE_RESULT(a2065_bridge_result),
+	.A2065_BRIDGE_DONE(a2065_bridge_done),
+	.A2065_BRIDGE_DATA(a2065_fpga_bridge_data),
+	.A2065_BRIDGE_ADDR_OFF(a2065_fpga_bridge_addr_off),
+	.A2065_BRIDGE_RW(a2065_fpga_bridge_rw),
+	.A2065_BRIDGE_NEW_REQ(a2065_fpga_bridge_new_req),
+	.A2065_BRAM_CLK(clk_audio),
+	.A2065_BRAM_ADDR(a2065_arm_bram_addr),
+	.A2065_BRAM_WDATA(a2065_arm_bram_wdata),
+	.A2065_BRAM_WR(a2065_arm_bram_wr),
+	.A2065_BRAM_BE(a2065_arm_bram_be),
+	.A2065_BRAM_RDATA(a2065_arm_bram_rdata),
+	.A2065_INT2(a2065_mailbox_int2)
 );
 
 endmodule

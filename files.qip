@@ -8,6 +8,13 @@ set_global_assignment -name QIP_FILE rtl/paula.qip
 set_global_assignment -name QIP_FILE rtl/denise.qip
 set_global_assignment -name QIP_FILE rtl/fpga-toccata/toccata.qip
 set_global_assignment -name VERILOG_FILE rtl/A2065/a2065_boardram.v
+set_global_assignment -name VERILOG_FILE rtl/A2065/a2065_registers.v
+set_global_assignment -name VERILOG_FILE rtl/A2065/a2065_axi_slave.v
+set_global_assignment -name VERILOG_FILE rtl/A2065/a2065_ddram.v
+set_global_assignment -name VERILOG_FILE rtl/A2065/ddr_arbiter.v
+set_global_assignment -name VERILOG_FILE rtl/A2065/a2065_ddr3_test.v
+set_global_assignment -name VERILOG_FILE rtl/A2065/avalon_arbiter.v
+set_global_assignment -name VERILOG_FILE rtl/A2065/a2065_ddr3_mailbox.v
 set_global_assignment -name VERILOG_FILE rtl/gary.v
 set_global_assignment -name VERILOG_FILE rtl/rtg.v
 set_global_assignment -name VERILOG_FILE rtl/akiko.v

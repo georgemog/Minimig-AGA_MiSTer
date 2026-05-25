@@ -110,7 +110,8 @@ module a2065_top (
         .bridge_new_req (bridge_new_req),
         .bridge_done    (bridge_done),
         .bridge_result  (bridge_result),
-        .bridge_done_clr(bridge_done_clr)
+        .bridge_done_clr(bridge_done_clr),
+        .regs_nrdy      ()
     );
 
     /* ── boardram DTACK (direct HPS2FPGA, no ARM mediation needed) ── */

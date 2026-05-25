@@ -39,7 +39,30 @@ module sysmem_lite
 	input          vbuf_read,
 	input  [127:0] vbuf_writedata,
 	input   [15:0] vbuf_byteenable,
-	input          vbuf_write
+	input          vbuf_write,
+
+	// HPS-to-FPGA AXI bridge
+	output  [1:0]  h2f_awvalid,
+	input   [1:0]  h2f_awready,
+	output  [29:0] h2f_awaddr,
+	output  [11:0] h2f_awid,
+	output         h2f_wvalid,
+	input          h2f_wready,
+	output  [31:0] h2f_wdata,
+	output  [7:0]  h2f_wstrb,
+	input          h2f_bready,
+	output         h2f_bvalid,
+	output  [1:0]  h2f_bresp,
+	output  [11:0] h2f_bid,
+	output         h2f_arvalid,
+	input          h2f_arready,
+	output  [29:0] h2f_araddr,
+	output  [11:0] h2f_arid,
+	input          h2f_rready,
+	output         h2f_rvalid,
+	output  [31:0] h2f_rdata,
+	output  [1:0]  h2f_rresp,
+	output  [11:0] h2f_rid
 );
 
 assign reset_out = ~init_reset_n | ~hps_h2f_reset_n | reset_core_req;
@@ -219,7 +242,29 @@ sysmem_HPS_fpga_interfaces fpga_interfaces (
 	.f2h_sdram2_READ          (f2h_ram2_read),
 	.f2h_sdram2_WRITEDATA     (f2h_ram2_writedata),
 	.f2h_sdram2_BYTEENABLE    (f2h_ram2_byteenable),
-	.f2h_sdram2_WRITE         (f2h_ram2_write)
+	.f2h_sdram2_WRITE         (f2h_ram2_write),
+
+	.h2f_axi_awvalid          (h2f_awvalid),
+	.h2f_axi_awready          (h2f_awready),
+	.h2f_axi_awaddr           (h2f_awaddr),
+	.h2f_axi_awid             (h2f_awid),
+	.h2f_axi_wvalid           (h2f_wvalid),
+	.h2f_axi_wready           (h2f_wready),
+	.h2f_axi_wdata            (h2f_wdata),
+	.h2f_axi_wstrb            (h2f_wstrb),
+	.h2f_axi_bready           (h2f_bready),
+	.h2f_axi_bvalid           (h2f_bvalid),
+	.h2f_axi_bresp            (h2f_bresp),
+	.h2f_axi_bid              (h2f_bid),
+	.h2f_axi_arvalid          (h2f_arvalid),
+	.h2f_axi_arready          (h2f_arready),
+	.h2f_axi_araddr           (h2f_araddr),
+	.h2f_axi_arid             (h2f_arid),
+	.h2f_axi_rready           (h2f_rready),
+	.h2f_axi_rvalid           (h2f_rvalid),
+	.h2f_axi_rdata            (h2f_rdata),
+	.h2f_axi_rresp            (h2f_rresp),
+	.h2f_axi_rid              (h2f_rid)
 );
 
 wire hps_h2f_reset_n;
@@ -293,6 +338,29 @@ module sysmem_HPS_fpga_interfaces
 
 	// f2h_sdram2_clock
 	,input wire [1 - 1 : 0 ] f2h_sdram2_clk
+
+	// HPS-to-FPGA AXI bridge
+	,output wire [1:0]  h2f_axi_awvalid
+	,input  wire [1:0]  h2f_axi_awready
+	,output wire [29:0] h2f_axi_awaddr
+	,output wire [11:0] h2f_axi_awid
+	,output wire        h2f_axi_wvalid
+	,input  wire        h2f_axi_wready
+	,output wire [31:0] h2f_axi_wdata
+	,output wire [7:0]  h2f_axi_wstrb
+	,input  wire        h2f_axi_bready
+	,output wire        h2f_axi_bvalid
+	,output wire [1:0]  h2f_axi_bresp
+	,output wire [11:0] h2f_axi_bid
+	,output wire        h2f_axi_arvalid
+	,input  wire        h2f_axi_arready
+	,output wire [29:0] h2f_axi_araddr
+	,output wire [11:0] h2f_axi_arid
+	,input  wire        h2f_axi_rready
+	,output wire        h2f_axi_rvalid
+	,output wire [31:0] h2f_axi_rdata
+	,output wire [1:0]  h2f_axi_rresp
+	,output wire [11:0] h2f_axi_rid
 );
 
 
@@ -396,9 +464,48 @@ cyclonev_hps_interface_fpga2hps fpga2hps(
 
 
 cyclonev_hps_interface_hps2fpga hps2fpga(
- .port_size_config({
+  .port_size_config({
     2'b11 // 1:0
   })
+  ,.clk({
+    h2f_user0_clk, h2f_user0_clk // 1:0
+  })
+  ,.awid(h2f_axi_awid)
+  ,.awaddr(h2f_axi_awaddr)
+  ,.awlen()
+  ,.awsize()
+  ,.awburst()
+  ,.awlock()
+  ,.awcache()
+  ,.awprot()
+  ,.awvalid(h2f_axi_awvalid)
+  ,.awready(h2f_axi_awready)
+  ,.wid()
+  ,.wdata(h2f_axi_wdata)
+  ,.wstrb(h2f_axi_wstrb)
+  ,.wlast()
+  ,.wvalid(h2f_axi_wvalid)
+  ,.wready(h2f_axi_wready)
+  ,.bid(h2f_axi_bid)
+  ,.bresp(h2f_axi_bresp)
+  ,.bvalid(h2f_axi_bvalid)
+  ,.bready(h2f_axi_bready)
+  ,.arid(h2f_axi_arid)
+  ,.araddr(h2f_axi_araddr)
+  ,.arlen()
+  ,.arsize()
+  ,.arburst()
+  ,.arlock()
+  ,.arcache()
+  ,.arprot()
+  ,.arvalid(h2f_axi_arvalid)
+  ,.arready(h2f_axi_arready)
+  ,.rid(h2f_axi_rid)
+  ,.rdata(h2f_axi_rdata)
+  ,.rresp(h2f_axi_rresp)
+  ,.rlast()
+  ,.rvalid(h2f_axi_rvalid)
+  ,.rready(h2f_axi_rready)
 );
 
 

@@ -15,6 +15,8 @@ module a2065_ddr3_mailbox (
     output wire [1:0]   bram_be,
     input  wire [15:0]  bram_rdata,
 
+    output reg          a2065_int2,
+
     output reg  [28:0]  avl_address,
     output reg  [7:0]   avl_burstcount,
     output reg          avl_read,
@@ -31,23 +33,28 @@ module a2065_ddr3_mailbox (
     localparam MBX_REG_RSP  = 29'h1001;
     localparam MBX_RAM_REQ  = 29'h1002;
     localparam MBX_RAM_RSP  = 29'h1003;
+    localparam MBX_INT      = 29'h1004;
 
-    localparam S_IDLE        = 4'd0;
-    localparam S_REG_CAPTURE = 4'd1;
-    localparam S_REG_WR_REQ  = 4'd2;
-    localparam S_REG_POLL    = 4'd3;
-    localparam S_REG_POLL_W  = 4'd4;
-    localparam S_REG_CLR_RSP = 4'd5;
-    localparam S_REG_CLR_REQ = 4'd6;
-    localparam S_REG_DONE    = 4'd7;
-    localparam S_RAM_CAPTURE = 4'd8;
-    localparam S_RAM_WAIT    = 4'd13;
-    localparam S_RAM_BRAM_RD = 4'd9;
-    localparam S_RAM_WR_RSP  = 4'd10;
-    localparam S_RAM_CLR_REQ = 4'd11;
-    localparam S_RAM_DONE    = 4'd12;
+    localparam S_IDLE          = 5'd0;
+    localparam S_REG_CAPTURE   = 5'd1;
+    localparam S_REG_WR_REQ    = 5'd2;
+    localparam S_REG_POLL      = 5'd3;
+    localparam S_REG_POLL_W    = 5'd4;
+    localparam S_REG_CLR_RSP   = 5'd5;
+    localparam S_REG_CLR_REQ   = 5'd6;
+    localparam S_REG_DONE      = 5'd7;
+    localparam S_RAM_CAPTURE   = 5'd8;
+    localparam S_RAM_BRAM_RD   = 5'd9;
+    localparam S_RAM_WR_RSP    = 5'd10;
+    localparam S_RAM_CLR_REQ   = 5'd11;
+    localparam S_RAM_DONE      = 5'd12;
+    localparam S_RAM_WAIT      = 5'd13;
+    localparam S_RAM_BRAM_LAT  = 5'd14;
+    localparam S_RAM_BRAM_WAIT = 5'd15;
+    localparam S_INT_CAPTURE   = 5'd16;
+    localparam S_INT_WAIT      = 5'd17;
 
-    reg [3:0]  state;
+    reg [4:0]  state;
     reg [15:0] saved_data;
     reg [7:0]  saved_addr;
     reg        saved_rw;
@@ -60,6 +67,8 @@ module a2065_ddr3_mailbox (
     reg         bram_wr_r;
     reg  [1:0]  bram_be_r;
     reg  [15:0] bram_rdata_r;
+    reg  [7:0]  poll_div;
+    reg  [7:0]  timeout_cnt;
 
     assign bram_addr  = bram_addr_r;
     assign bram_wdata = bram_wdata_r;
@@ -87,6 +96,9 @@ module a2065_ddr3_mailbox (
             bram_wr_r      <= 0;
             bram_be_r      <= 0;
             bram_rdata_r   <= 0;
+            poll_div       <= 0;
+            a2065_int2     <= 0;
+            timeout_cnt    <= 0;
         end else begin
             avl_read  <= 0;
             avl_write <= 0;
@@ -94,6 +106,7 @@ module a2065_ddr3_mailbox (
             req_sync0 <= bridge_new_req;
             req_sync1 <= req_sync0;
             req_prev  <= req_sync1;
+            poll_div  <= poll_div + 1'b1;
 
             case (state)
             S_IDLE: begin
@@ -103,11 +116,18 @@ module a2065_ddr3_mailbox (
                     saved_addr <= bridge_addr_off;
                     saved_rw   <= bridge_rw;
                     state      <= S_REG_CAPTURE;
-                end else begin
+                end else if (&poll_div) begin
+                    timeout_cnt    <= 8'd255;
                     avl_address    <= DDR3_BASE + MBX_RAM_REQ;
                     avl_burstcount <= 1;
                     avl_read       <= 1;
                     state          <= S_RAM_CAPTURE;
+                end else if (&poll_div[4:0]) begin
+                    timeout_cnt    <= 8'd255;
+                    avl_address    <= DDR3_BASE + MBX_INT;
+                    avl_burstcount <= 1;
+                    avl_read       <= 1;
+                    state          <= S_INT_CAPTURE;
                 end
             end
 
@@ -191,9 +211,13 @@ module a2065_ddr3_mailbox (
             end
 
             S_RAM_CAPTURE: begin
-                if (!avl_waitrequest) begin
+                if (timeout_cnt == 0) begin
+                    state <= S_IDLE;
+                end else if (!avl_waitrequest) begin
+                    timeout_cnt <= 8'd255;
                     state <= S_RAM_WAIT;
                 end else begin
+                    timeout_cnt <= timeout_cnt - 1'b1;
                     avl_address    <= DDR3_BASE + MBX_RAM_REQ;
                     avl_burstcount <= 1;
                     avl_read       <= 1;
@@ -201,9 +225,11 @@ module a2065_ddr3_mailbox (
             end
 
             S_RAM_WAIT: begin
-                if (avl_readdatavalid) begin
+                if (timeout_cnt == 0) begin
+                    state <= S_IDLE;
+                end else if (avl_readdatavalid) begin
                     if (avl_readdata[0]) begin
-                        bram_addr_r <= avl_readdata[16:2];
+                        bram_addr_r <= avl_readdata[16:3];
                         bram_be_r   <= 2'b11;
                         saved_rw    <= avl_readdata[1];
                         if (avl_readdata[1]) begin
@@ -214,15 +240,31 @@ module a2065_ddr3_mailbox (
                     end else begin
                         state <= S_IDLE;
                     end
+                end else begin
+                    timeout_cnt <= timeout_cnt - 1'b1;
                 end
             end
 
             S_RAM_BRAM_RD: begin
-                if (!saved_rw) begin
-                    bram_rdata_r <= bram_rdata;
+                if (saved_rw) begin
+                    avl_address    <= DDR3_BASE + MBX_RAM_RSP;
+                    avl_writedata  <= 64'h1;
+                    avl_byteenable <= 8'hFF;
+                    avl_burstcount <= 1;
+                    avl_write      <= 1;
+                    state          <= S_RAM_WR_RSP;
+                end else begin
+                    state <= S_RAM_BRAM_LAT;
                 end
+            end
+
+            S_RAM_BRAM_LAT: begin
+                state <= S_RAM_BRAM_WAIT;
+            end
+
+            S_RAM_BRAM_WAIT: begin
                 avl_address    <= DDR3_BASE + MBX_RAM_RSP;
-                avl_writedata  <= saved_rw ? 64'h1 : {16'b0, bram_rdata, 1'b1};
+                avl_writedata  <= {16'b0, bram_rdata, 1'b1};
                 avl_byteenable <= 8'hFF;
                 avl_burstcount <= 1;
                 avl_write      <= 1;
@@ -252,6 +294,31 @@ module a2065_ddr3_mailbox (
 
             S_RAM_DONE: begin
                 state <= S_IDLE;
+            end
+
+            S_INT_CAPTURE: begin
+                if (timeout_cnt == 0) begin
+                    state <= S_IDLE;
+                end else if (!avl_waitrequest) begin
+                    timeout_cnt <= 8'd255;
+                    state <= S_INT_WAIT;
+                end else begin
+                    timeout_cnt <= timeout_cnt - 1'b1;
+                    avl_address    <= DDR3_BASE + MBX_INT;
+                    avl_burstcount <= 1;
+                    avl_read       <= 1;
+                end
+            end
+
+            S_INT_WAIT: begin
+                if (timeout_cnt == 0) begin
+                    state <= S_IDLE;
+                end else if (avl_readdatavalid) begin
+                    a2065_int2 <= avl_readdata[0];
+                    state      <= S_IDLE;
+                end else begin
+                    timeout_cnt <= timeout_cnt - 1'b1;
+                end
             end
             endcase
         end

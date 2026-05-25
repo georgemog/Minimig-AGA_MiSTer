@@ -158,7 +158,21 @@ module emu
 	input   [6:0] USER_IN,
 	output  [6:0] USER_OUT,
 
-	input         OSD_STATUS
+	input         OSD_STATUS,
+
+	input  [15:0] A2065_BRIDGE_RESULT,
+	input         A2065_BRIDGE_DONE,
+	output [15:0] A2065_BRIDGE_DATA,
+	output [7:0]  A2065_BRIDGE_ADDR_OFF,
+	output        A2065_BRIDGE_RW,
+	output        A2065_BRIDGE_NEW_REQ,
+	input         A2065_BRAM_CLK,
+	input  [14:1] A2065_BRAM_ADDR,
+	input  [15:0] A2065_BRAM_WDATA,
+	input         A2065_BRAM_WR,
+	input  [1:0]  A2065_BRAM_BE,
+	output [15:0] A2065_BRAM_RDATA,
+	input         A2065_INT2
 );
 
 assign ADC_BUS  = 'Z;
@@ -535,8 +549,7 @@ sdram_ctrl ram1
 
 wire [15:0] ram_dout2;
 wire        ram_ready2;
-wire  [7:0] DDRAM_BE_S;
-   
+
 ddram_ctrl ram2
 (
 	.sysclk       (clk_114         ),
@@ -791,7 +804,21 @@ minimig minimig
 	.ide_write    (ide_wr           ),
 	.ide_writedata(ide_dout         ),
 	.ide_read     (ide_rd           ),
-	.ide_readdata (ide_c_readdata   )
+	.ide_readdata (ide_c_readdata   ),
+
+	.a2065_bridge_result(A2065_BRIDGE_RESULT),
+	.a2065_bridge_done(A2065_BRIDGE_DONE),
+	.a2065_bridge_data(A2065_BRIDGE_DATA),
+	.a2065_bridge_addr_off(A2065_BRIDGE_ADDR_OFF),
+	.a2065_bridge_rw(A2065_BRIDGE_RW),
+	.a2065_bridge_new_req(A2065_BRIDGE_NEW_REQ),
+	.a2065_bram_clk(A2065_BRAM_CLK),
+	.a2065_bram_addr(A2065_BRAM_ADDR),
+	.a2065_bram_wdata(A2065_BRAM_WDATA),
+	.a2065_bram_wr(A2065_BRAM_WR),
+	.a2065_bram_be(A2065_BRAM_BE),
+	.a2065_bram_rdata(A2065_BRAM_RDATA),
+	.a2065_int2(A2065_INT2)
 );
 
 // power led control
