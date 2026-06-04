@@ -53,6 +53,7 @@ module a2065_ddr3_mailbox (
     localparam S_RAM_BRAM_WAIT = 5'd15;
     localparam S_INT_CAPTURE   = 5'd16;
     localparam S_INT_WAIT      = 5'd17;
+    localparam S_REG_POLL_DRAIN = 5'd18;
 
     reg [4:0]  state;
     reg [15:0] saved_data;
@@ -69,6 +70,8 @@ module a2065_ddr3_mailbox (
     reg  [15:0] bram_rdata_r;
     reg  [7:0]  poll_div;
     reg  [7:0]  timeout_cnt;
+    reg  [15:0] reg_timeout;
+    reg        read_outstanding;
 
     assign bram_addr  = bram_addr_r;
     assign bram_wdata = bram_wdata_r;
@@ -99,6 +102,8 @@ module a2065_ddr3_mailbox (
             poll_div       <= 0;
             a2065_int2     <= 0;
             timeout_cnt    <= 0;
+            reg_timeout    <= 0;
+            read_outstanding <= 0;
         end else begin
             avl_read  <= 0;
             avl_write <= 0;
@@ -132,6 +137,8 @@ module a2065_ddr3_mailbox (
             end
 
             S_REG_CAPTURE: begin
+                read_outstanding <= 0;
+                reg_timeout    <= 16'hFFFF;
                 avl_address    <= DDR3_BASE + MBX_REG_REQ;
                 avl_writedata  <= {14'b0, saved_data,
                                    saved_addr,
@@ -152,14 +159,40 @@ module a2065_ddr3_mailbox (
             end
 
             S_REG_POLL: begin
-                avl_address    <= DDR3_BASE + MBX_REG_RSP;
-                avl_burstcount <= 1;
-                avl_read       <= 1;
-                state          <= S_REG_POLL_W;
+                if (reg_timeout == 0) begin
+                    bridge_result  <= 16'hFFFF;
+                    avl_address    <= DDR3_BASE + MBX_REG_REQ;
+                    avl_writedata  <= 64'b0;
+                    avl_byteenable <= 8'hFF;
+                    avl_burstcount <= 1;
+                    avl_write      <= 1;
+                    state          <= S_REG_CLR_REQ;
+                end else if (!read_outstanding) begin
+                    reg_timeout      <= reg_timeout - 1'b1;
+                    avl_address      <= DDR3_BASE + MBX_REG_RSP;
+                    avl_burstcount   <= 1;
+                    avl_read         <= 1;
+                    read_outstanding <= 1'b1;
+                    state            <= S_REG_POLL_W;
+                end else if (avl_readdatavalid) begin
+                    read_outstanding <= 1'b0;
+                    if (avl_readdata[0]) begin
+                        bridge_result  <= avl_readdata[16:1];
+                        avl_address    <= DDR3_BASE + MBX_REG_RSP;
+                        avl_writedata  <= 64'b0;
+                        avl_byteenable <= 8'hFF;
+                        avl_burstcount <= 1;
+                        avl_write      <= 1;
+                        state          <= S_REG_CLR_RSP;
+                    end
+                end else begin
+                    reg_timeout <= reg_timeout - 1'b1;
+                end
             end
 
             S_REG_POLL_W: begin
                 if (avl_readdatavalid) begin
+                    read_outstanding <= 1'b0;
                     if (avl_readdata[0]) begin
                         bridge_result  <= avl_readdata[16:1];
                         avl_address    <= DDR3_BASE + MBX_REG_RSP;
@@ -169,15 +202,18 @@ module a2065_ddr3_mailbox (
                         avl_write      <= 1;
                         state          <= S_REG_CLR_RSP;
                     end else begin
-                        avl_address    <= DDR3_BASE + MBX_REG_RSP;
-                        avl_burstcount <= 1;
-                        avl_read       <= 1;
+                        state <= S_REG_POLL;
                     end
+                end else if (!avl_waitrequest) begin
+                    state <= S_REG_POLL;
                 end else begin
-                    avl_address    <= DDR3_BASE + MBX_REG_RSP;
-                    avl_burstcount <= 1;
-                    avl_read       <= 1;
+                    reg_timeout <= reg_timeout - 1'b1;
+                    avl_read    <= 1;
                 end
+            end
+
+            S_REG_POLL_DRAIN: begin
+                state <= S_REG_POLL;
             end
 
             S_REG_CLR_RSP: begin
