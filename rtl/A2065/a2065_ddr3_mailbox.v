@@ -1,21 +1,48 @@
+/*
+ * a2065_ddr3_mailbox.v
+ *
+ * DDR3 mailbox adapter for A2065 (Phase 2 — doorbell architecture).
+ *
+ * Runs entirely in clk_audio (~49 MHz).  Handles three functions:
+ *
+ *   1. CMD doorbell: regfile raises cmd_pending → mailbox writes CMD to
+ *      DDR3 for ARM daemon → pulses cmd_clear.  No DTACK stretch for
+ *      reads/RAP writes — only back-pressure on overlapping RDP writes.
+ *
+ *   2. Boardram DDR3 window: 68k accesses boardram at card+0x8000 via
+ *      DTACK-stretched DDR3 read/write.  Request arrives via async
+ *      handshake from clk_sys; FSM performs direct DDR3 access.
+ *
+ *   3. CSR shadow + INT state poll: periodically reads CSR_SHADOW and
+ *      INT_STATE from DDR3 (written by ARM daemon).  CSR values feed
+ *      back to regfile for 68k zero-latency reads.  INT_STATE drives
+ *      the a2065_int2 output.
+ *
+ * Priority: CMD doorbell > boardram window > CSR/INT poll.
+ */
+
 module a2065_ddr3_mailbox (
     input  wire         clk,
     input  wire         rst_n,
 
-    input  wire [15:0]  bridge_data,
-    input  wire [7:0]   bridge_addr_off,
-    input  wire         bridge_rw,
-    input  wire         bridge_new_req,
-    output reg          bridge_done,
-    output reg  [15:0]  bridge_result,
+    input  wire         cmd_pending,
+    input  wire  [6:0]  cmd_rap,
+    input  wire  [15:0] cmd_data,
+    output reg          cmd_clear,
 
-    output wire [14:1]  bram_addr,
-    output wire [15:0]  bram_wdata,
-    output wire         bram_wr,
-    output wire [1:0]   bram_be,
-    input  wire [15:0]  bram_rdata,
-
+    output reg  [15:0]  csr0_out,
+    output reg  [15:0]  csr1_out,
+    output reg  [15:0]  csr2_out,
+    output reg  [15:0]  csr3_out,
     output reg          a2065_int2,
+
+    input  wire         bram_req_valid,
+    input  wire  [13:0] bram_req_addr,
+    input  wire  [15:0] bram_req_wdata,
+    input  wire         bram_req_rw,
+    output reg          bram_req_ack,
+    output reg          bram_resp_valid,
+    output reg  [15:0]  bram_resp_data,
 
     output reg  [28:0]  avl_address,
     output reg  [7:0]   avl_burstcount,
@@ -28,334 +55,237 @@ module a2065_ddr3_mailbox (
     input  wire         avl_waitrequest
 );
 
-    localparam DDR3_BASE    = 29'h03FE0000;
-    localparam MBX_REG_REQ  = 29'h1000;
-    localparam MBX_REG_RSP  = 29'h1001;
-    localparam MBX_RAM_REQ  = 29'h1002;
-    localparam MBX_RAM_RSP  = 29'h1003;
-    localparam MBX_INT      = 29'h1004;
+    localparam DDR3_BASE = 29'h03FE0000;
 
-    localparam S_IDLE          = 5'd0;
-    localparam S_REG_CAPTURE   = 5'd1;
-    localparam S_REG_WR_REQ    = 5'd2;
-    localparam S_REG_POLL      = 5'd3;
-    localparam S_REG_POLL_W    = 5'd4;
-    localparam S_REG_CLR_RSP   = 5'd5;
-    localparam S_REG_CLR_REQ   = 5'd6;
-    localparam S_REG_DONE      = 5'd7;
-    localparam S_RAM_CAPTURE   = 5'd8;
-    localparam S_RAM_BRAM_RD   = 5'd9;
-    localparam S_RAM_WR_RSP    = 5'd10;
-    localparam S_RAM_CLR_REQ   = 5'd11;
-    localparam S_RAM_DONE      = 5'd12;
-    localparam S_RAM_WAIT      = 5'd13;
-    localparam S_RAM_BRAM_LAT  = 5'd14;
-    localparam S_RAM_BRAM_WAIT = 5'd15;
-    localparam S_INT_CAPTURE   = 5'd16;
-    localparam S_INT_WAIT      = 5'd17;
-    localparam S_REG_POLL_DRAIN = 5'd18;
+    localparam AV_CMD          = 29'h1000;
+    localparam AV_CSR          = 29'h1002;
+    localparam AV_INT          = 29'h1003;
 
-    reg [4:0]  state;
-    reg [15:0] saved_data;
-    reg [7:0]  saved_addr;
-    reg        saved_rw;
+    localparam S_IDLE          = 4'd0;
+    localparam S_CMD_WR_W      = 4'd1;
+    localparam S_CMD_DONE      = 4'd2;
 
-    reg req_sync0, req_sync1, req_prev;
-    wire req_edge = req_sync1 && !req_prev;
+    localparam S_BR_CAPTURE    = 4'd3;
+    localparam S_BR_READ_W     = 4'd4;
+    localparam S_BR_READ_D     = 4'd5;
+    localparam S_BR_WRITE_W    = 4'd6;
+    localparam S_BR_DONE       = 4'd7;
 
-    reg  [14:1] bram_addr_r;
-    reg  [15:0] bram_wdata_r;
-    reg         bram_wr_r;
-    reg  [1:0]  bram_be_r;
-    reg  [15:0] bram_rdata_r;
-    reg  [7:0]  poll_div;
-    reg  [7:0]  timeout_cnt;
-    reg  [15:0] reg_timeout;
-    reg        read_outstanding;
+    localparam S_CSR_RD_W      = 4'd8;
+    localparam S_CSR_RD_D      = 4'd9;
+    localparam S_INT_RD_W      = 4'd10;
+    localparam S_INT_RD_D      = 4'd11;
 
-    assign bram_addr  = bram_addr_r;
-    assign bram_wdata = bram_wdata_r;
-    assign bram_wr    = bram_wr_r;
-    assign bram_be    = bram_be_r;
+    reg [3:0] state;
+
+    reg  [7:0] poll_div;
+
+    reg  [13:0] br_addr;
+    reg  [15:0] br_wdata;
+    reg         br_rw;
+    reg  [1:0]  br_lane;
+
+    wire [28:0] br_ddr3_addr = DDR3_BASE + {17'b0, br_addr[13:2]};
+
+    reg [7:0] br_be;
+    reg [63:0] br_wdata_shifted;
+
+    always @(*) begin
+        case (br_lane)
+        2'd0: begin br_be = 8'h03; br_wdata_shifted = {48'b0, br_wdata}; end
+        2'd1: begin br_be = 8'h0C; br_wdata_shifted = {32'b0, br_wdata, 16'b0}; end
+        2'd2: begin br_be = 8'h30; br_wdata_shifted = {16'b0, br_wdata, 32'b0}; end
+        2'd3: begin br_be = 8'hC0; br_wdata_shifted = {br_wdata, 48'b0}; end
+        endcase
+    end
+
+    reg bram_req_valid_s, bram_req_valid_s1, bram_req_valid_s2;
+    reg [13:0] bram_req_addr_s;
+    reg [15:0] bram_req_wdata_s;
+    reg        bram_req_rw_s;
+
+    always @(posedge clk) begin
+        bram_req_valid_s  <= bram_req_valid;
+        bram_req_valid_s1 <= bram_req_valid_s;
+        bram_req_valid_s2 <= bram_req_valid_s1;
+
+        bram_req_addr_s   <= bram_req_addr;
+        bram_req_wdata_s  <= bram_req_wdata;
+        bram_req_rw_s     <= bram_req_rw;
+    end
+
+    wire bram_req_rise = bram_req_valid_s1 & ~bram_req_valid_s2;
+
+    reg cmd_pending_s, cmd_pending_s1, cmd_pending_s2;
+    reg [6:0]  cmd_rap_s;
+    reg [15:0] cmd_data_s;
+
+    always @(posedge clk) begin
+        cmd_pending_s  <= cmd_pending;
+        cmd_pending_s1 <= cmd_pending_s;
+        cmd_pending_s2 <= cmd_pending_s1;
+        cmd_rap_s      <= cmd_rap;
+        cmd_data_s     <= cmd_data;
+    end
+
+    wire cmd_rise = cmd_pending_s1 & ~cmd_pending_s2;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state          <= S_IDLE;
-            avl_address    <= 0;
-            avl_burstcount <= 1;
-            avl_read       <= 0;
-            avl_write      <= 0;
-            avl_writedata  <= 0;
-            avl_byteenable <= 8'hFF;
-            bridge_result  <= 0;
-            saved_data     <= 0;
-            saved_addr     <= 0;
-            saved_rw       <= 0;
-            req_sync0      <= 0;
-            req_sync1      <= 0;
-            req_prev       <= 0;
-            bram_addr_r    <= 0;
-            bram_wdata_r   <= 0;
-            bram_wr_r      <= 0;
-            bram_be_r      <= 0;
-            bram_rdata_r   <= 0;
-            poll_div       <= 0;
-            a2065_int2     <= 0;
-            timeout_cnt    <= 0;
-            reg_timeout    <= 0;
-            read_outstanding <= 0;
+            state           <= S_IDLE;
+            avl_address     <= 0;
+            avl_burstcount  <= 1;
+            avl_read        <= 0;
+            avl_write       <= 0;
+            avl_writedata   <= 0;
+            avl_byteenable  <= 8'hFF;
+            poll_div        <= 0;
+            cmd_clear       <= 0;
+            csr0_out        <= 0;
+            csr1_out        <= 0;
+            csr2_out        <= 0;
+            csr3_out        <= 0;
+            a2065_int2      <= 0;
+            bram_req_ack    <= 0;
+            bram_resp_valid <= 0;
+            bram_resp_data  <= 0;
+            br_lane         <= 0;
         end else begin
-            avl_read  <= 0;
-            avl_write <= 0;
-            bram_wr_r <= 0;
-            req_sync0 <= bridge_new_req;
-            req_sync1 <= req_sync0;
-            req_prev  <= req_sync1;
-            poll_div  <= poll_div + 1'b1;
+            avl_read        <= 0;
+            avl_write       <= 0;
+            cmd_clear       <= 0;
+            bram_req_ack    <= 0;
+            bram_resp_valid <= 0;
+
+            poll_div <= poll_div + 1'b1;
 
             case (state)
             S_IDLE: begin
-                bridge_done <= 0;
-                if (req_sync1) begin
-                    saved_data <= bridge_data;
-                    saved_addr <= bridge_addr_off;
-                    saved_rw   <= bridge_rw;
-                    state      <= S_REG_CAPTURE;
-                end else if (&poll_div) begin
-                    timeout_cnt    <= 8'd255;
-                    avl_address    <= DDR3_BASE + MBX_RAM_REQ;
+                if (cmd_rise) begin
+                    avl_address    <= DDR3_BASE + AV_CMD;
+                    avl_writedata  <= {39'b0, cmd_data_s, cmd_rap_s, 1'b1};
+                    avl_byteenable <= 8'hFF;
+                    avl_burstcount <= 1;
+                    avl_write      <= 1;
+                    cmd_clear      <= 1'b1;
+                    state          <= S_CMD_WR_W;
+                end else if (bram_req_rise) begin
+                    br_addr      <= bram_req_addr_s;
+                    br_wdata     <= bram_req_wdata_s;
+                    br_rw        <= bram_req_rw_s;
+                    br_lane      <= bram_req_addr_s[1:0];
+                    bram_req_ack <= 1'b1;
+                    state        <= S_BR_CAPTURE;
+                end else if (&poll_div[5:0]) begin
+                    avl_address    <= DDR3_BASE + AV_CSR;
                     avl_burstcount <= 1;
                     avl_read       <= 1;
-                    state          <= S_RAM_CAPTURE;
-                end else if (&poll_div[4:0]) begin
-                    timeout_cnt    <= 8'd255;
-                    avl_address    <= DDR3_BASE + MBX_INT;
-                    avl_burstcount <= 1;
-                    avl_read       <= 1;
-                    state          <= S_INT_CAPTURE;
+                    state          <= S_CSR_RD_W;
                 end
             end
 
-            S_REG_CAPTURE: begin
-                read_outstanding <= 0;
-                reg_timeout    <= 16'hFFFF;
-                avl_address    <= DDR3_BASE + MBX_REG_REQ;
-                avl_writedata  <= {14'b0, saved_data,
-                                   saved_addr,
-                                   saved_rw, 1'b1};
-                avl_byteenable <= 8'hFF;
-                avl_burstcount <= 1;
-                avl_write      <= 1;
-                state          <= S_REG_WR_REQ;
-            end
-
-            S_REG_WR_REQ: begin
+            S_CMD_WR_W: begin
                 if (!avl_waitrequest) begin
-                    avl_write <= 0;
-                    state     <= S_REG_POLL;
+                    state <= S_CMD_DONE;
                 end else begin
                     avl_write <= 1;
                 end
             end
 
-            S_REG_POLL: begin
-                if (reg_timeout == 0) begin
-                    bridge_result  <= 16'hFFFF;
-                    avl_address    <= DDR3_BASE + MBX_REG_REQ;
-                    avl_writedata  <= 64'b0;
-                    avl_byteenable <= 8'hFF;
-                    avl_burstcount <= 1;
-                    avl_write      <= 1;
-                    state          <= S_REG_CLR_REQ;
-                end else if (!read_outstanding) begin
-                    reg_timeout      <= reg_timeout - 1'b1;
-                    avl_address      <= DDR3_BASE + MBX_REG_RSP;
-                    avl_burstcount   <= 1;
-                    avl_read         <= 1;
-                    read_outstanding <= 1'b1;
-                    state            <= S_REG_POLL_W;
-                end else if (avl_readdatavalid) begin
-                    read_outstanding <= 1'b0;
-                    if (avl_readdata[0]) begin
-                        bridge_result  <= avl_readdata[16:1];
-                        avl_address    <= DDR3_BASE + MBX_REG_RSP;
-                        avl_writedata  <= 64'b0;
-                        avl_byteenable <= 8'hFF;
-                        avl_burstcount <= 1;
-                        avl_write      <= 1;
-                        state          <= S_REG_CLR_RSP;
-                    end
-                end else begin
-                    reg_timeout <= reg_timeout - 1'b1;
-                end
-            end
-
-            S_REG_POLL_W: begin
-                if (avl_readdatavalid) begin
-                    read_outstanding <= 1'b0;
-                    if (avl_readdata[0]) begin
-                        bridge_result  <= avl_readdata[16:1];
-                        avl_address    <= DDR3_BASE + MBX_REG_RSP;
-                        avl_writedata  <= 64'b0;
-                        avl_byteenable <= 8'hFF;
-                        avl_burstcount <= 1;
-                        avl_write      <= 1;
-                        state          <= S_REG_CLR_RSP;
-                    end else begin
-                        state <= S_REG_POLL;
-                    end
-                end else if (!avl_waitrequest) begin
-                    state <= S_REG_POLL;
-                end else begin
-                    reg_timeout <= reg_timeout - 1'b1;
-                    avl_read    <= 1;
-                end
-            end
-
-            S_REG_POLL_DRAIN: begin
-                state <= S_REG_POLL;
-            end
-
-            S_REG_CLR_RSP: begin
-                if (!avl_waitrequest) begin
-                    avl_address    <= DDR3_BASE + MBX_REG_REQ;
-                    avl_writedata  <= 64'b0;
-                    avl_byteenable <= 8'hFF;
-                    avl_burstcount <= 1;
-                    avl_write      <= 1;
-                    state          <= S_REG_CLR_REQ;
-                end else begin
-                    avl_write <= 1;
-                end
-            end
-
-            S_REG_CLR_REQ: begin
-                if (!avl_waitrequest) begin
-                    bridge_done <= 1;
-                    state       <= S_REG_DONE;
-                end else begin
-                    avl_write <= 1;
-                end
-            end
-
-            S_REG_DONE: begin
-                bridge_done <= 1;
-                if (!req_sync1) begin
-                    bridge_done <= 0;
-                    state       <= S_IDLE;
-                end
-            end
-
-            S_RAM_CAPTURE: begin
-                if (timeout_cnt == 0) begin
-                    state <= S_IDLE;
-                end else if (!avl_waitrequest) begin
-                    timeout_cnt <= 8'd255;
-                    state <= S_RAM_WAIT;
-                end else begin
-                    timeout_cnt <= timeout_cnt - 1'b1;
-                    avl_address    <= DDR3_BASE + MBX_RAM_REQ;
-                    avl_burstcount <= 1;
-                    avl_read       <= 1;
-                end
-            end
-
-            S_RAM_WAIT: begin
-                if (timeout_cnt == 0) begin
-                    state <= S_IDLE;
-                end else if (avl_readdatavalid) begin
-                    if (avl_readdata[0]) begin
-                        bram_addr_r <= avl_readdata[16:3];
-                        bram_be_r   <= 2'b11;
-                        saved_rw    <= avl_readdata[1];
-                        if (avl_readdata[1]) begin
-                            bram_wdata_r <= avl_readdata[32:17];
-                            bram_wr_r    <= 1'b1;
-                        end
-                        state <= S_RAM_BRAM_RD;
-                    end else begin
-                        state <= S_IDLE;
-                    end
-                end else begin
-                    timeout_cnt <= timeout_cnt - 1'b1;
-                end
-            end
-
-            S_RAM_BRAM_RD: begin
-                if (saved_rw) begin
-                    avl_address    <= DDR3_BASE + MBX_RAM_RSP;
-                    avl_writedata  <= 64'h1;
-                    avl_byteenable <= 8'hFF;
-                    avl_burstcount <= 1;
-                    avl_write      <= 1;
-                    state          <= S_RAM_WR_RSP;
-                end else begin
-                    state <= S_RAM_BRAM_LAT;
-                end
-            end
-
-            S_RAM_BRAM_LAT: begin
-                state <= S_RAM_BRAM_WAIT;
-            end
-
-            S_RAM_BRAM_WAIT: begin
-                avl_address    <= DDR3_BASE + MBX_RAM_RSP;
-                avl_writedata  <= {16'b0, bram_rdata, 1'b1};
-                avl_byteenable <= 8'hFF;
-                avl_burstcount <= 1;
-                avl_write      <= 1;
-                state          <= S_RAM_WR_RSP;
-            end
-
-            S_RAM_WR_RSP: begin
-                if (!avl_waitrequest) begin
-                    avl_address    <= DDR3_BASE + MBX_RAM_REQ;
-                    avl_writedata  <= 64'b0;
-                    avl_byteenable <= 8'hFF;
-                    avl_burstcount <= 1;
-                    avl_write      <= 1;
-                    state          <= S_RAM_CLR_REQ;
-                end else begin
-                    avl_write <= 1;
-                end
-            end
-
-            S_RAM_CLR_REQ: begin
-                if (!avl_waitrequest) begin
-                    state <= S_RAM_DONE;
-                end else begin
-                    avl_write <= 1;
-                end
-            end
-
-            S_RAM_DONE: begin
+            S_CMD_DONE: begin
                 state <= S_IDLE;
             end
 
-            S_INT_CAPTURE: begin
-                if (timeout_cnt == 0) begin
-                    state <= S_IDLE;
-                end else if (!avl_waitrequest) begin
-                    timeout_cnt <= 8'd255;
-                    state <= S_INT_WAIT;
+            S_BR_CAPTURE: begin
+                if (br_rw) begin
+                    avl_address    <= br_ddr3_addr;
+                    avl_writedata  <= br_wdata_shifted;
+                    avl_byteenable <= br_be;
+                    avl_burstcount <= 1;
+                    avl_write      <= 1;
+                    state          <= S_BR_WRITE_W;
                 end else begin
-                    timeout_cnt <= timeout_cnt - 1'b1;
-                    avl_address    <= DDR3_BASE + MBX_INT;
+                    avl_address    <= br_ddr3_addr;
                     avl_burstcount <= 1;
                     avl_read       <= 1;
+                    state          <= S_BR_READ_W;
                 end
             end
 
-            S_INT_WAIT: begin
-                if (timeout_cnt == 0) begin
-                    state <= S_IDLE;
-                end else if (avl_readdatavalid) begin
-                    a2065_int2 <= avl_readdata[0];
-                    state      <= S_IDLE;
+            S_BR_READ_W: begin
+                if (!avl_waitrequest) begin
+                    avl_read <= 0;
+                    state    <= S_BR_READ_D;
                 end else begin
-                    timeout_cnt <= timeout_cnt - 1'b1;
+                    avl_read <= 1;
                 end
             end
+
+            S_BR_READ_D: begin
+                if (avl_readdatavalid) begin
+                    case (br_lane)
+                    2'd0: bram_resp_data <= avl_readdata[15:0];
+                    2'd1: bram_resp_data <= avl_readdata[31:16];
+                    2'd2: bram_resp_data <= avl_readdata[47:32];
+                    2'd3: bram_resp_data <= avl_readdata[63:48];
+                    endcase
+                    bram_resp_valid <= 1'b1;
+                    state           <= S_BR_DONE;
+                end
+            end
+
+            S_BR_WRITE_W: begin
+                if (!avl_waitrequest) begin
+                    bram_resp_valid <= 1'b1;
+                    state           <= S_BR_DONE;
+                end else begin
+                    avl_write <= 1;
+                end
+            end
+
+            S_BR_DONE: begin
+                state <= S_IDLE;
+            end
+
+            S_CSR_RD_W: begin
+                if (!avl_waitrequest) begin
+                    avl_read <= 0;
+                    state    <= S_CSR_RD_D;
+                end else begin
+                    avl_read <= 1;
+                end
+            end
+
+            S_CSR_RD_D: begin
+                if (avl_readdatavalid) begin
+                    csr0_out <= avl_readdata[15:0];
+                    csr1_out <= avl_readdata[31:16];
+                    csr2_out <= avl_readdata[47:32];
+                    csr3_out <= avl_readdata[63:48];
+                    avl_address    <= DDR3_BASE + AV_INT;
+                    avl_burstcount <= 1;
+                    avl_read       <= 1;
+                    state          <= S_INT_RD_W;
+                end
+            end
+
+            S_INT_RD_W: begin
+                if (!avl_waitrequest) begin
+                    avl_read <= 0;
+                    state    <= S_INT_RD_D;
+                end else begin
+                    avl_read <= 1;
+                end
+            end
+
+            S_INT_RD_D: begin
+                if (avl_readdatavalid) begin
+                    a2065_int2 <= avl_readdata[0];
+                    state      <= S_IDLE;
+                end
+            end
+
+            default: state <= S_IDLE;
             endcase
         end
     end

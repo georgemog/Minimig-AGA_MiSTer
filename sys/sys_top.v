@@ -672,19 +672,24 @@ wire [7:0]  h2f_wstrb;
 wire        h2f_wvalid, h2f_wready, h2f_bready, h2f_bvalid;
 wire        h2f_arvalid, h2f_arready, h2f_rready, h2f_rvalid;
 
-wire [15:0] a2065_bridge_result;
-wire        a2065_bridge_done;
-wire [15:0] a2065_fpga_bridge_data;
-wire [7:0]  a2065_fpga_bridge_addr_off;
-wire        a2065_fpga_bridge_rw;
-wire        a2065_fpga_bridge_new_req;
-
-wire [14:1] a2065_arm_bram_addr;
-wire [15:0] a2065_arm_bram_wdata;
-wire        a2065_arm_bram_wr;
-wire [1:0]  a2065_arm_bram_be;
-wire [15:0] a2065_arm_bram_rdata;
 wire        a2065_mailbox_int2;
+
+wire        a2065_cmd_pending;
+wire [6:0]  a2065_cmd_rap;
+wire [15:0] a2065_cmd_data;
+wire        a2065_cmd_clear;
+wire [15:0] a2065_csr0_out;
+wire [15:0] a2065_csr1_out;
+wire [15:0] a2065_csr2_out;
+wire [15:0] a2065_csr3_out;
+
+wire        a2065_bram_req_valid;
+wire [13:0] a2065_bram_req_addr;
+wire [15:0] a2065_bram_req_wdata;
+wire        a2065_bram_req_rw;
+wire        a2065_bram_req_ack;
+wire        a2065_bram_resp_valid;
+wire [15:0] a2065_bram_resp_data;
 wire        ram2_waitrequest;
 wire [63:0] ram2_readdata;
 wire [63:0] ram2_writedata;
@@ -745,25 +750,29 @@ ddr_svc ddr_svc
 	.ch1_ready(pal_wr)
 );
 
-// A2065 DDR3 mailbox → arbiter master 1
+// A2065 DDR3 mailbox (doorbell + boardram window + CSR/INT poll)
 a2065_ddr3_mailbox a2065_mailbox_inst (
 	.clk(clk_audio),
 	.rst_n(~reset),
 
-	.bridge_data(a2065_fpga_bridge_data),
-	.bridge_addr_off(a2065_fpga_bridge_addr_off),
-	.bridge_rw(a2065_fpga_bridge_rw),
-	.bridge_new_req(a2065_fpga_bridge_new_req),
-	.bridge_done(a2065_bridge_done),
-	.bridge_result(a2065_bridge_result),
+	.cmd_pending(a2065_cmd_pending),
+	.cmd_rap(a2065_cmd_rap),
+	.cmd_data(a2065_cmd_data),
+	.cmd_clear(a2065_cmd_clear),
 
-	.bram_addr(a2065_arm_bram_addr),
-	.bram_wdata(a2065_arm_bram_wdata),
-	.bram_wr(a2065_arm_bram_wr),
-	.bram_be(a2065_arm_bram_be),
-	.bram_rdata(a2065_arm_bram_rdata),
-
+	.csr0_out(a2065_csr0_out),
+	.csr1_out(a2065_csr1_out),
+	.csr2_out(a2065_csr2_out),
+	.csr3_out(a2065_csr3_out),
 	.a2065_int2(a2065_mailbox_int2),
+
+	.bram_req_valid(a2065_bram_req_valid),
+	.bram_req_addr(a2065_bram_req_addr),
+	.bram_req_wdata(a2065_bram_req_wdata),
+	.bram_req_rw(a2065_bram_req_rw),
+	.bram_req_ack(a2065_bram_req_ack),
+	.bram_resp_valid(a2065_bram_resp_valid),
+	.bram_resp_data(a2065_bram_resp_data),
 
 	.avl_address(arb_m1_address),
 	.avl_burstcount(arb_m1_burstcount),
@@ -2006,19 +2015,24 @@ emu emu
 	.USER_OUT(user_out),
 	.USER_IN(user_in),
 
-	.A2065_BRIDGE_RESULT(a2065_bridge_result),
-	.A2065_BRIDGE_DONE(a2065_bridge_done),
-	.A2065_BRIDGE_DATA(a2065_fpga_bridge_data),
-	.A2065_BRIDGE_ADDR_OFF(a2065_fpga_bridge_addr_off),
-	.A2065_BRIDGE_RW(a2065_fpga_bridge_rw),
-	.A2065_BRIDGE_NEW_REQ(a2065_fpga_bridge_new_req),
-	.A2065_BRAM_CLK(clk_audio),
-	.A2065_BRAM_ADDR(a2065_arm_bram_addr),
-	.A2065_BRAM_WDATA(a2065_arm_bram_wdata),
-	.A2065_BRAM_WR(a2065_arm_bram_wr),
-	.A2065_BRAM_BE(a2065_arm_bram_be),
-	.A2065_BRAM_RDATA(a2065_arm_bram_rdata),
-	.A2065_INT2(a2065_mailbox_int2)
+	.A2065_INT2(a2065_mailbox_int2),
+
+	.A2065_CMD_PENDING(a2065_cmd_pending),
+	.A2065_CMD_RAP(a2065_cmd_rap),
+	.A2065_CMD_DATA(a2065_cmd_data),
+	.A2065_CMD_CLEAR(a2065_cmd_clear),
+	.A2065_CSR0_IN(a2065_csr0_out),
+	.A2065_CSR1_IN(a2065_csr1_out),
+	.A2065_CSR2_IN(a2065_csr2_out),
+	.A2065_CSR3_IN(a2065_csr3_out),
+
+	.A2065_BRAM_REQ_VALID(a2065_bram_req_valid),
+	.A2065_BRAM_REQ_ADDR(a2065_bram_req_addr),
+	.A2065_BRAM_REQ_WDATA(a2065_bram_req_wdata),
+	.A2065_BRAM_REQ_RW(a2065_bram_req_rw),
+	.A2065_BRAM_REQ_ACK(a2065_bram_req_ack),
+	.A2065_BRAM_RESP_VALID(a2065_bram_resp_valid),
+	.A2065_BRAM_RESP_DATA(a2065_bram_resp_data)
 );
 
 endmodule

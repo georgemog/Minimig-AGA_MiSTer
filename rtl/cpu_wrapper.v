@@ -72,6 +72,11 @@ module cpu_wrapper
 	output            a2065_ena,
 	output reg  [7:0] a2065_base,
 
+	input  wire [7:0] a2065_mac_byte2,
+	input  wire [7:0] a2065_mac_byte3,
+	input  wire [7:0] a2065_mac_byte4,
+	input  wire [7:0] a2065_mac_byte5,
+
 	output reg  [1:0] cpustate,
 	output reg  [3:0] cacr,
 	output reg [31:0] nmi_addr
@@ -362,6 +367,22 @@ reg       ac_a2065;
 reg [2:0] ac_memcard;
 reg [3:0] autocfg_data;
 
+reg [3:0] mac_nibble_2h, mac_nibble_2l;
+reg [3:0] mac_nibble_3h, mac_nibble_3l;
+reg [3:0] mac_nibble_4h, mac_nibble_4l;
+reg [3:0] mac_nibble_5h, mac_nibble_5l;
+
+always @(posedge clk) begin
+	mac_nibble_2h <= ~a2065_mac_byte2[7:4];
+	mac_nibble_2l <= ~a2065_mac_byte2[3:0];
+	mac_nibble_3h <= ~a2065_mac_byte3[7:4];
+	mac_nibble_3l <= ~a2065_mac_byte3[3:0];
+	mac_nibble_4h <= ~a2065_mac_byte4[7:4];
+	mac_nibble_4l <= ~a2065_mac_byte4[3:0];
+	mac_nibble_5h <= ~a2065_mac_byte5[7:4];
+	mac_nibble_5l <= ~a2065_mac_byte5[3:0];
+end
+
 always @(*) begin
 	autocfg_data = 4'b1111;
 
@@ -412,14 +433,14 @@ always @(*) begin
 			6'h9: autocfg_data = 4'b1101; // er_Manufacturer high low
 			6'ha: autocfg_data = 4'b1111; // er_Manufacturer low high
 			6'hb: autocfg_data = 4'b1101; // er_Manufacturer low low -> 0x0202
-			6'hc: autocfg_data = 4'b1101; // serial byte 0 high (MAC[2]=0x02)
-			6'hd: autocfg_data = 4'b1101; // serial byte 0 low
-			6'he: autocfg_data = 4'b1000; // serial byte 1 high (MAC[3]=0x70)
-			6'hf: autocfg_data = 4'b1111; // serial byte 1 low
-			6'h10: autocfg_data = 4'b1000; // serial byte 2 high (MAC[4]=0x70)
-			6'h11: autocfg_data = 4'b1111; // serial byte 2 low
-			6'h12: autocfg_data = 4'b1000; // serial byte 3 high (MAC[5]=0x70)
-			6'h13: autocfg_data = 4'b1111; // serial byte 3 low
+			6'hc: autocfg_data = mac_nibble_2h;
+			6'hd: autocfg_data = mac_nibble_2l;
+			6'he: autocfg_data = mac_nibble_3h;
+			6'hf: autocfg_data = mac_nibble_3l;
+			6'h10: autocfg_data = mac_nibble_4h;
+			6'h11: autocfg_data = mac_nibble_4l;
+			6'h12: autocfg_data = mac_nibble_5h;
+			6'h13: autocfg_data = mac_nibble_5l;
 			6'h14: autocfg_data = 4'b1111; // er_InitDiagVec
 			6'h15: autocfg_data = 4'b1111; // er_InitDiagVec
 			default: ;

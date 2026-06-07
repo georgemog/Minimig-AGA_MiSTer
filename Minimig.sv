@@ -160,19 +160,28 @@ module emu
 
 	input         OSD_STATUS,
 
-	input  [15:0] A2065_BRIDGE_RESULT,
-	input         A2065_BRIDGE_DONE,
-	output [15:0] A2065_BRIDGE_DATA,
-	output [7:0]  A2065_BRIDGE_ADDR_OFF,
-	output        A2065_BRIDGE_RW,
-	output        A2065_BRIDGE_NEW_REQ,
-	input         A2065_BRAM_CLK,
-	input  [14:1] A2065_BRAM_ADDR,
-	input  [15:0] A2065_BRAM_WDATA,
-	input         A2065_BRAM_WR,
-	input  [1:0]  A2065_BRAM_BE,
-	output [15:0] A2065_BRAM_RDATA,
-	input         A2065_INT2
+	input         A2065_INT2,
+	input  [7:0]  A2065_MAC_BYTE2,
+	input  [7:0]  A2065_MAC_BYTE3,
+	input  [7:0]  A2065_MAC_BYTE4,
+	input  [7:0]  A2065_MAC_BYTE5,
+
+	output        A2065_CMD_PENDING,
+	output [6:0]  A2065_CMD_RAP,
+	output [15:0] A2065_CMD_DATA,
+	input         A2065_CMD_CLEAR,
+	input  [15:0] A2065_CSR0_IN,
+	input  [15:0] A2065_CSR1_IN,
+	input  [15:0] A2065_CSR2_IN,
+	input  [15:0] A2065_CSR3_IN,
+
+	input         A2065_BRAM_REQ_ACK,
+	input         A2065_BRAM_RESP_VALID,
+	input  [15:0] A2065_BRAM_RESP_DATA,
+	output        A2065_BRAM_REQ_VALID,
+	output [13:0] A2065_BRAM_REQ_ADDR,
+	output [15:0] A2065_BRAM_REQ_WDATA,
+	output        A2065_BRAM_REQ_RW
 );
 
 assign ADC_BUS  = 'Z;
@@ -488,6 +497,10 @@ cpu_wrapper cpu_wrapper
 	.toccata_ena  (toccata_ena     ),
 	.a2065_ena    (a2065_ena       ),
 	.a2065_base   (a2065_base      ),
+	.a2065_mac_byte2(A2065_MAC_BYTE2),
+	.a2065_mac_byte3(A2065_MAC_BYTE3),
+	.a2065_mac_byte4(A2065_MAC_BYTE4),
+	.a2065_mac_byte5(A2065_MAC_BYTE5),
 	.toccata_base (toccata_base    ),
 	
 	.ramsel       (ram_sel         ),
@@ -806,19 +819,24 @@ minimig minimig
 	.ide_read     (ide_rd           ),
 	.ide_readdata (ide_c_readdata   ),
 
-	.a2065_bridge_result(A2065_BRIDGE_RESULT),
-	.a2065_bridge_done(A2065_BRIDGE_DONE),
-	.a2065_bridge_data(A2065_BRIDGE_DATA),
-	.a2065_bridge_addr_off(A2065_BRIDGE_ADDR_OFF),
-	.a2065_bridge_rw(A2065_BRIDGE_RW),
-	.a2065_bridge_new_req(A2065_BRIDGE_NEW_REQ),
-	.a2065_bram_clk(A2065_BRAM_CLK),
-	.a2065_bram_addr(A2065_BRAM_ADDR),
-	.a2065_bram_wdata(A2065_BRAM_WDATA),
-	.a2065_bram_wr(A2065_BRAM_WR),
-	.a2065_bram_be(A2065_BRAM_BE),
-	.a2065_bram_rdata(A2065_BRAM_RDATA),
-	.a2065_int2(A2065_INT2)
+	.a2065_int2(A2065_INT2),
+
+	.a2065_cmd_pending(A2065_CMD_PENDING),
+	.a2065_cmd_rap(A2065_CMD_RAP),
+	.a2065_cmd_data(A2065_CMD_DATA),
+	.a2065_cmd_clear(A2065_CMD_CLEAR),
+	.a2065_csr0_in(A2065_CSR0_IN),
+	.a2065_csr1_in(A2065_CSR1_IN),
+	.a2065_csr2_in(A2065_CSR2_IN),
+	.a2065_csr3_in(A2065_CSR3_IN),
+
+	.a2065_bram_req_valid(A2065_BRAM_REQ_VALID),
+	.a2065_bram_req_addr(A2065_BRAM_REQ_ADDR),
+	.a2065_bram_req_wdata(A2065_BRAM_REQ_WDATA),
+	.a2065_bram_req_rw(A2065_BRAM_REQ_RW),
+	.a2065_bram_req_ack(A2065_BRAM_REQ_ACK),
+	.a2065_bram_resp_valid(A2065_BRAM_RESP_VALID),
+	.a2065_bram_resp_data(A2065_BRAM_RESP_DATA)
 );
 
 // power led control

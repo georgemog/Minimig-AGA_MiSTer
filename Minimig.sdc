@@ -30,6 +30,13 @@ set_multicycle_path -from {yc_out|chroma_LUT_BURST[*]} \
 set_multicycle_path -from {yc_out|chroma_LUT_BURST[*]} \
                     -to   {yc_out|phase[*].u[*]} -hold 1
 
+# A2065 MAC bytes: clk_audio → clk_sys cross-domain (registered in cpu_wrapper)
+set_false_path -from {*a2065_mailbox_inst|mac_byte*} -to {emu|cpu_wrapper|mac_nibble_*}
+
+# emu PLL cross-clock: counter[1]→counter[0] marginal path
+set_multicycle_path -setup 2 -from [get_clocks "emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter\[1\].output_counter|divclk"] -to [get_clocks "emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter\[0\].output_counter|divclk"]
+set_multicycle_path -hold 1 -from [get_clocks "emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter\[1\].output_counter|divclk"] -to [get_clocks "emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter\[0\].output_counter|divclk"]
+
 #these constraints aren't really correct, but help fitting.
 #28MHz pixel clock might be affected when scandoubler fx is used.
 set_multicycle_path -to {*Hq2x*} -setup 2

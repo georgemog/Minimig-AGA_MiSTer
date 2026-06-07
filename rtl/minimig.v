@@ -268,20 +268,25 @@ module minimig
 	input         ide_read,
 	output [15:0] ide_readdata,
 
-	// A2065 ARM bridge
-	input  [15:0] a2065_bridge_result,
-	input         a2065_bridge_done,
-	output [15:0] a2065_bridge_data,
-	output [7:0]  a2065_bridge_addr_off,
-	output        a2065_bridge_rw,
-	output        a2065_bridge_new_req,
-	input         a2065_bram_clk,
-	input  [14:1] a2065_bram_addr,
-	input  [15:0] a2065_bram_wdata,
-	input         a2065_bram_wr,
-	input  [1:0]  a2065_bram_be,
-	output [15:0] a2065_bram_rdata,
-	input         a2065_int2
+	// A2065 register file + doorbell
+	input         a2065_int2,
+
+	output        a2065_cmd_pending,
+	output [6:0]  a2065_cmd_rap,
+	output [15:0] a2065_cmd_data,
+	input         a2065_cmd_clear,
+	input  [15:0] a2065_csr0_in,
+	input  [15:0] a2065_csr1_in,
+	input  [15:0] a2065_csr2_in,
+	input  [15:0] a2065_csr3_in,
+
+	output        a2065_bram_req_valid,
+	output [13:0] a2065_bram_req_addr,
+	output [15:0] a2065_bram_req_wdata,
+	output        a2065_bram_req_rw,
+	input         a2065_bram_req_ack,
+	input         a2065_bram_resp_valid,
+	input  [15:0] a2065_bram_resp_data
 );
 
 
@@ -690,7 +695,7 @@ minimig_m68k_bridge CPU1
 	.dbr(dbr),
 	.dbs(dbs),
 	.xbs(xbs),
-	.nrdy((gayle_nrdy & rd_cyc) | regs_nrdy),
+	.nrdy((gayle_nrdy & rd_cyc) | regs_nrdy | a2065_bram_nrdy),
 	.bls(bls),
 	.memory_config(memory_config[3:0]),
 	._as(_cpu_as),
@@ -925,49 +930,50 @@ toccata #(
 // A2065 Ethernet: boardram (BRAM) + chip registers (local CSR)
 
 wire [15:0] a2065_boardram_out;
+wire        a2065_bram_nrdy;
 
-a2065_boardram a2065_boardram_inst (
-	.clk          (clk),
-	.rst_n        (~reset),
-	.cpu_addr     (cpu_address_out[23:1]),
-	.cpu_data_in  (cpu_data_out),
-	.cpu_data_out (a2065_boardram_out),
-	.cpu_rd       (cpu_rd),
-	.cpu_hwr      (cpu_hwr),
-	.cpu_lwr      (cpu_lwr),
-	.sel          (sel_a2065),
-	.arm_addr     (a2065_bram_addr),
-	.arm_data_in  (a2065_bram_wdata),
-	.arm_rdata    (a2065_bram_rdata),
-	.arm_wr       (a2065_bram_wr),
-	.arm_be       (a2065_bram_be),
-	.clk_b        (a2065_bram_clk)
+a2065_ddram a2065_ddram_inst (
+	.clk_sys              (clk),
+	.rst_n_sys            (~reset),
+	.cpu_addr             (cpu_address_out[23:1]),
+	.cpu_data_in          (cpu_data_out),
+	.cpu_data_out         (a2065_boardram_out),
+	.cpu_hwr              (cpu_hwr),
+	.cpu_lwr              (cpu_lwr),
+	.sel                  (sel_a2065),
+	.nrdy                 (a2065_bram_nrdy),
+	.bram_req_valid       (a2065_bram_req_valid),
+	.bram_req_addr        (a2065_bram_req_addr),
+	.bram_req_wdata       (a2065_bram_req_wdata),
+	.bram_req_rw          (a2065_bram_req_rw),
+	.bram_req_ack_audio   (a2065_bram_req_ack),
+	.bram_resp_valid_audio(a2065_bram_resp_valid),
+	.bram_resp_data_audio (a2065_bram_resp_data)
 );
 
 wire [15:0] a2065_regs_dout;
 wire        regs_nrdy;
 
-a2065_registers #(.BRIDGE_LOCAL(0)) a2065_regs_inst (
+a2065_regfile a2065_regfile_inst (
 	.clk            (clk),
 	.rst_n          (~reset),
-	.card_base      (a2065_base),
-	.card_configured(a2065_ena),
 	.cpu_addr       ({cpu_address_out, 1'b0}),
 	.cpu_rw         (cpu_r_w),
 	.cpu_as_n       (_cpu_as),
 	.cpu_ds_n       (_cpu_uds & _cpu_lds),
 	.cpu_data_in    (cpu_data_out),
 	.cpu_data_out   (a2065_regs_dout),
-	.cpu_dtack_n    (),
-	.cpu_berr_n     (),
-	.bridge_data    (a2065_bridge_data),
-	.bridge_addr_off(a2065_bridge_addr_off),
-	.bridge_rw      (a2065_bridge_rw),
-	.bridge_new_req (a2065_bridge_new_req),
-	.bridge_done    (a2065_bridge_done),
-	.bridge_result  (a2065_bridge_result),
-	.bridge_done_clr(),
-	.regs_nrdy      (regs_nrdy)
+	.regs_nrdy      (regs_nrdy),
+	.card_base      (a2065_base),
+	.card_configured(a2065_ena),
+	.cmd_pending    (a2065_cmd_pending),
+	.cmd_rap        (a2065_cmd_rap),
+	.cmd_data       (a2065_cmd_data),
+	.cmd_clear      (a2065_cmd_clear),
+	.csr0_in        (a2065_csr0_in),
+	.csr1_in        (a2065_csr1_in),
+	.csr2_in        (a2065_csr2_in),
+	.csr3_in        (a2065_csr3_in)
 );
 
 //-------------------------------------------------------------------------------------
