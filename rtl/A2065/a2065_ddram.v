@@ -22,8 +22,10 @@ module a2065_ddram (
 
     input  wire [23:1]  cpu_addr,
     input  wire [15:0]  cpu_data_in,
-    output reg  [15:0]  cpu_data_out,
-    input  wire         cpu_rw,
+    output wire [15:0]  cpu_data_out,
+    input  wire         cpu_rw,      // 68k R/W: 1=read, 0=write
+    input  wire         cpu_as_n,    // address strobe (active low)
+    input  wire         cpu_ds_n,    // data strobe   (active low, UDS&LDS)
     input  wire         sel,
     output wire         nrdy,
 
@@ -37,19 +39,20 @@ module a2065_ddram (
     input  wire [15:0]  bram_resp_data_audio
 );
 
-    wire sel_br   = sel && cpu_addr[15];
+    // Qualify the access with AS+DS like a2065_regfile does: only capture
+    // when the strobes are asserted, so the direction (cpu_rw) and write
+    // data (cpu_data_in) are valid.  Keying off raw sel during the address
+    // phase captured before hwr/lwr/data were valid.  DS deasserts between
+    // bus cycles, giving a clean NR_DONE->NR_IDLE separation (no edge detect).
+    wire sel_br   = sel && cpu_addr[15] && !cpu_as_n && !cpu_ds_n;
     wire is_write = ~cpu_rw;
     wire [13:0] word_idx = cpu_addr[14:1];
 
-    reg  sel_br_d;
-    always @(posedge clk_sys or negedge rst_n_sys) begin
-        if (!rst_n_sys)
-            sel_br_d <= 1'b0;
-        else
-            sel_br_d <= sel_br;
-    end
-
-    wire sel_br_rise = sel_br && !sel_br_d;
+    reg  [15:0] rd_data;
+    // Gate the read data onto the shared CPU data bus only while this card's
+    // boardram is the read target, so the held value can't corrupt the OR-mux
+    // for other peripherals' reads.
+    assign cpu_data_out = (sel && cpu_addr[15] && cpu_rw) ? rd_data : 16'h0000;
 
     reg  sys_req;
     reg  sys_got_resp;
@@ -62,7 +65,7 @@ module a2065_ddram (
         if (!rst_n_sys) begin
             sys_req       <= 1'b0;
             sys_got_resp  <= 1'b0;
-            cpu_data_out  <= 16'h0000;
+            rd_data       <= 16'h0000;
             bram_req_valid <= 1'b0;
             bram_req_addr  <= 0;
             bram_req_wdata <= 0;
@@ -92,10 +95,10 @@ module a2065_ddram (
 
             if (rv_sync1) begin
                 sys_got_resp <= 1'b1;
-                cpu_data_out <= rd_sync1;
+                rd_data <= rd_sync1;
             end
 
-            if (sel_br_rise && !sys_req && !sys_got_resp && nrdy_state == NR_IDLE) begin
+            if (sel_br && !sys_req && !sys_got_resp && nrdy_state == NR_IDLE) begin
                 bram_req_addr  <= word_idx;
                 bram_req_wdata <= cpu_data_in;
                 bram_req_rw    <= is_write;
@@ -116,7 +119,7 @@ module a2065_ddram (
         end else begin
             case (nrdy_state)
             NR_IDLE: begin
-                if (sel_br_rise)
+                if (sel_br && !sys_req && !sys_got_resp)
                     nrdy_state <= NR_WAIT;
             end
             NR_WAIT: begin

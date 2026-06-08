@@ -939,6 +939,8 @@ a2065_ddram a2065_ddram_inst (
 	.cpu_data_in          (cpu_data_out),
 	.cpu_data_out         (a2065_boardram_out),
 	.cpu_rw               (cpu_r_w),
+	.cpu_as_n             (_cpu_as),
+	.cpu_ds_n             (_cpu_uds & _cpu_lds),
 	.sel                  (sel_a2065),
 	.nrdy                 (a2065_bram_nrdy),
 	.bram_req_valid       (a2065_bram_req_valid),

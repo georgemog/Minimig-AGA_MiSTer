@@ -79,27 +79,52 @@ module a2065_regfile (
         cmd_clear_s1 <= cmd_clear_s;
     end
 
+    // RDP writes back-pressure (stretch DTACK) until the doorbell is fully
+    // drained by the ARM daemon (cmd_clear arrives only after the mailbox
+    // sees the daemon clear the DDR3 CMD slot).  This serializes the rapid
+    // RAP/RDP register sequence used by LANCE INIT so no write is lost.
+    // RAP writes stay local and immediate; reads are unaffected (zero latency).
+    localparam W_IDLE = 2'd0, W_WAIT = 2'd1, W_DONE = 2'd2;
+    reg [1:0] wstate;
+
+    wire rdp_wr = sel_chipreg && !cpu_rw && !is_rap;
+    wire rap_wr = sel_chipreg && !cpu_rw &&  is_rap;
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rap         <= 7'd0;
             cmd_pending <= 1'b0;
             cmd_rap     <= 7'd0;
             cmd_data    <= 16'd0;
+            wstate      <= W_IDLE;
         end else begin
-        if (cmd_clear_s1)
-            cmd_pending <= 1'b0;
-
-        if (sel_chipreg && !cpu_rw && !is_rap) begin
-            cmd_rap     <= rap;
-            cmd_data    <= cpu_data_in;
-            cmd_pending <= 1'b1;
-        end
-
-            if (sel_chipreg && !cpu_rw && is_rap)
+            if (rap_wr)
                 rap <= cpu_data_in[6:0];
+
+            case (wstate)
+            W_IDLE: begin
+                if (rdp_wr) begin
+                    cmd_rap     <= rap;
+                    cmd_data    <= cpu_data_in;
+                    cmd_pending <= 1'b1;
+                    wstate      <= W_WAIT;
+                end
+            end
+            W_WAIT: begin
+                if (cmd_clear_s1) begin
+                    cmd_pending <= 1'b0;
+                    wstate      <= W_DONE;
+                end
+            end
+            W_DONE: begin
+                if (!rdp_wr)            // bus cycle ended (DS deasserted)
+                    wstate <= W_IDLE;
+            end
+            default: wstate <= W_IDLE;
+            endcase
         end
     end
 
-    assign regs_nrdy = 1'b0;
+    assign regs_nrdy = (wstate == W_WAIT);
 
 endmodule

@@ -76,6 +76,12 @@ module a2065_ddr3_mailbox (
     localparam S_INT_RD_W      = 4'd10;
     localparam S_INT_RD_D      = 4'd11;
 
+    localparam S_BR_RMW_RD_W   = 4'd12;
+    localparam S_BR_RMW_RD_D   = 4'd13;
+
+    localparam S_CMD_POLL_W    = 4'd14;
+    localparam S_CMD_POLL_D    = 4'd15;
+
     reg [3:0] state;
 
     reg  [7:0] poll_div;
@@ -87,17 +93,12 @@ module a2065_ddr3_mailbox (
 
     wire [28:0] br_ddr3_addr = DDR3_BASE + {17'b0, br_addr[13:2]};
 
-    reg [7:0] br_be;
-    reg [63:0] br_wdata_shifted;
-
-    always @(*) begin
-        case (br_lane)
-        2'd0: begin br_be = 8'h03; br_wdata_shifted = {48'b0, br_wdata}; end
-        2'd1: begin br_be = 8'h0C; br_wdata_shifted = {32'b0, br_wdata, 16'b0}; end
-        2'd2: begin br_be = 8'h30; br_wdata_shifted = {16'b0, br_wdata, 32'b0}; end
-        2'd3: begin br_be = 8'hC0; br_wdata_shifted = {br_wdata, 48'b0}; end
-        endcase
-    end
+    /* Boardram writes use read-modify-write: the f2sdram2 port has only
+     * ever been exercised with full-word (be=0xFF) writes (audio, PAL,
+     * old DDR3 mailbox).  Partial byteenable writes are unproven and the
+     * single 16-bit lane would otherwise zero its 3 line-neighbours.  So
+     * read the 64-bit line, merge the target lane, write the whole line
+     * back with be=0xFF. */
 
     reg bram_req_valid_s, bram_req_valid_s1;
     reg [13:0] bram_req_addr_s;
@@ -182,11 +183,40 @@ module a2065_ddr3_mailbox (
             end
 
             S_CMD_WR_W: begin
-                cmd_clear <= 1'b1;
                 if (!avl_waitrequest) begin
-                    state <= S_CMD_DONE;
+                    // CMD posted to DDR3 — now poll the slot until the ARM
+                    // daemon drains it (writes pending bit = 0).
+                    avl_address    <= DDR3_BASE + AV_CMD;
+                    avl_burstcount <= 1;
+                    avl_read       <= 1;
+                    state          <= S_CMD_POLL_W;
                 end else begin
                     avl_write <= 1;
+                end
+            end
+
+            // Wait for the daemon to clear the CMD slot before acking the
+            // doorbell.  Without this, a back-to-back RDP write (the INIT
+            // register sequence) could overwrite a CMD the daemon hasn't read.
+            S_CMD_POLL_W: begin
+                if (!avl_waitrequest) begin
+                    avl_read <= 0;
+                    state    <= S_CMD_POLL_D;
+                end else begin
+                    avl_read <= 1;
+                end
+            end
+
+            S_CMD_POLL_D: begin
+                if (avl_readdatavalid) begin
+                    if (avl_readdata[0]) begin
+                        avl_address <= DDR3_BASE + AV_CMD;
+                        avl_read    <= 1;
+                        state       <= S_CMD_POLL_W;   // still pending, re-poll
+                    end else begin
+                        cmd_clear <= 1'b1;             // drained — ack regfile
+                        state     <= S_CMD_DONE;
+                    end
                 end
             end
 
@@ -199,19 +229,11 @@ module a2065_ddr3_mailbox (
             end
 
             S_BR_CAPTURE: begin
-                if (br_rw) begin
-                    avl_address    <= br_ddr3_addr;
-                    avl_writedata  <= br_wdata_shifted;
-                    avl_byteenable <= br_be;
-                    avl_burstcount <= 1;
-                    avl_write      <= 1;
-                    state          <= S_BR_WRITE_W;
-                end else begin
-                    avl_address    <= br_ddr3_addr;
-                    avl_burstcount <= 1;
-                    avl_read       <= 1;
-                    state          <= S_BR_READ_W;
-                end
+                // Both read and write begin by reading the 64-bit line.
+                avl_address    <= br_ddr3_addr;
+                avl_burstcount <= 1;
+                avl_read       <= 1;
+                state          <= br_rw ? S_BR_RMW_RD_W : S_BR_READ_W;
             end
 
             S_BR_READ_W: begin
@@ -247,6 +269,31 @@ module a2065_ddr3_mailbox (
 
             S_BR_DONE: begin
                 state <= S_IDLE;
+            end
+
+            S_BR_RMW_RD_W: begin
+                if (!avl_waitrequest) begin
+                    avl_read <= 0;
+                    state    <= S_BR_RMW_RD_D;
+                end else begin
+                    avl_read <= 1;
+                end
+            end
+
+            S_BR_RMW_RD_D: begin
+                if (avl_readdatavalid) begin
+                    case (br_lane)
+                    2'd0: avl_writedata <= {avl_readdata[63:16], br_wdata};
+                    2'd1: avl_writedata <= {avl_readdata[63:32], br_wdata, avl_readdata[15:0]};
+                    2'd2: avl_writedata <= {avl_readdata[63:48], br_wdata, avl_readdata[31:0]};
+                    2'd3: avl_writedata <= {br_wdata, avl_readdata[47:0]};
+                    endcase
+                    avl_address    <= br_ddr3_addr;
+                    avl_byteenable <= 8'hFF;
+                    avl_burstcount <= 1;
+                    avl_write      <= 1;
+                    state          <= S_BR_WRITE_W;
+                end
             end
 
             S_CSR_RD_W: begin
