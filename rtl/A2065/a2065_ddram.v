@@ -23,8 +23,7 @@ module a2065_ddram (
     input  wire [23:1]  cpu_addr,
     input  wire [15:0]  cpu_data_in,
     output reg  [15:0]  cpu_data_out,
-    input  wire         cpu_hwr,
-    input  wire         cpu_lwr,
+    input  wire         cpu_rw,
     input  wire         sel,
     output wire         nrdy,
 
@@ -39,8 +38,18 @@ module a2065_ddram (
 );
 
     wire sel_br   = sel && cpu_addr[15];
-    wire is_write = ~cpu_hwr | ~cpu_lwr;
+    wire is_write = ~cpu_rw;
     wire [13:0] word_idx = cpu_addr[14:1];
+
+    reg  sel_br_d;
+    always @(posedge clk_sys or negedge rst_n_sys) begin
+        if (!rst_n_sys)
+            sel_br_d <= 1'b0;
+        else
+            sel_br_d <= sel_br;
+    end
+
+    wire sel_br_rise = sel_br && !sel_br_d;
 
     reg  sys_req;
     reg  sys_got_resp;
@@ -86,7 +95,7 @@ module a2065_ddram (
                 cpu_data_out <= rd_sync1;
             end
 
-            if (sel_br && !sys_req && !sys_got_resp && nrdy_state == NR_IDLE) begin
+            if (sel_br_rise && !sys_req && !sys_got_resp && nrdy_state == NR_IDLE) begin
                 bram_req_addr  <= word_idx;
                 bram_req_wdata <= cpu_data_in;
                 bram_req_rw    <= is_write;
@@ -107,7 +116,7 @@ module a2065_ddram (
         end else begin
             case (nrdy_state)
             NR_IDLE: begin
-                if (sel_br && !sys_req && !sys_got_resp)
+                if (sel_br_rise)
                     nrdy_state <= NR_WAIT;
             end
             NR_WAIT: begin
