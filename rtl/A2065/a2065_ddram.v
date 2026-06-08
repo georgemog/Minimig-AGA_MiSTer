@@ -86,7 +86,7 @@ module a2065_ddram (
                 cpu_data_out <= rd_sync1;
             end
 
-            if (sel_br && !sys_req && !sys_got_resp && (nrdy_state == NR_IDLE)) begin
+            if (sel_br && !sys_req && !sys_got_resp && nrdy_state == NR_IDLE) begin
                 bram_req_addr  <= word_idx;
                 bram_req_wdata <= cpu_data_in;
                 bram_req_rw    <= is_write;
@@ -107,7 +107,7 @@ module a2065_ddram (
         end else begin
             case (nrdy_state)
             NR_IDLE: begin
-                if (sel_br)
+                if (sel_br && !sys_req && !sys_got_resp)
                     nrdy_state <= NR_WAIT;
             end
             NR_WAIT: begin

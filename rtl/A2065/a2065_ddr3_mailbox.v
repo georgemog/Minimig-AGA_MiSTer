@@ -99,7 +99,7 @@ module a2065_ddr3_mailbox (
         endcase
     end
 
-    reg bram_req_valid_s, bram_req_valid_s1, bram_req_valid_s2;
+    reg bram_req_valid_s, bram_req_valid_s1;
     reg [13:0] bram_req_addr_s;
     reg [15:0] bram_req_wdata_s;
     reg        bram_req_rw_s;
@@ -107,28 +107,26 @@ module a2065_ddr3_mailbox (
     always @(posedge clk) begin
         bram_req_valid_s  <= bram_req_valid;
         bram_req_valid_s1 <= bram_req_valid_s;
-        bram_req_valid_s2 <= bram_req_valid_s1;
 
         bram_req_addr_s   <= bram_req_addr;
         bram_req_wdata_s  <= bram_req_wdata;
         bram_req_rw_s     <= bram_req_rw;
     end
 
-    wire bram_req_rise = bram_req_valid_s1 & ~bram_req_valid_s2;
+    wire bram_req_active = bram_req_valid_s1;
 
-    reg cmd_pending_s, cmd_pending_s1, cmd_pending_s2;
+    reg cmd_pending_s, cmd_pending_s1;
     reg [6:0]  cmd_rap_s;
     reg [15:0] cmd_data_s;
 
     always @(posedge clk) begin
         cmd_pending_s  <= cmd_pending;
         cmd_pending_s1 <= cmd_pending_s;
-        cmd_pending_s2 <= cmd_pending_s1;
         cmd_rap_s      <= cmd_rap;
         cmd_data_s     <= cmd_data;
     end
 
-    wire cmd_rise = cmd_pending_s1 & ~cmd_pending_s2;
+    wire cmd_active = cmd_pending_s1;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -161,15 +159,14 @@ module a2065_ddr3_mailbox (
 
             case (state)
             S_IDLE: begin
-                if (cmd_rise) begin
+                if (cmd_active) begin
                     avl_address    <= DDR3_BASE + AV_CMD;
                     avl_writedata  <= {39'b0, cmd_data_s, cmd_rap_s, 1'b1};
                     avl_byteenable <= 8'hFF;
                     avl_burstcount <= 1;
                     avl_write      <= 1;
-                    cmd_clear      <= 1'b1;
                     state          <= S_CMD_WR_W;
-                end else if (bram_req_rise) begin
+                end else if (bram_req_active) begin
                     br_addr      <= bram_req_addr_s;
                     br_wdata     <= bram_req_wdata_s;
                     br_rw        <= bram_req_rw_s;
@@ -185,6 +182,7 @@ module a2065_ddr3_mailbox (
             end
 
             S_CMD_WR_W: begin
+                cmd_clear <= 1'b1;
                 if (!avl_waitrequest) begin
                     state <= S_CMD_DONE;
                 end else begin
@@ -193,7 +191,11 @@ module a2065_ddr3_mailbox (
             end
 
             S_CMD_DONE: begin
-                state <= S_IDLE;
+                cmd_clear <= 1'b1;
+                if (!cmd_pending_s1) begin
+                    cmd_clear <= 1'b0;
+                    state     <= S_IDLE;
+                end
             end
 
             S_BR_CAPTURE: begin

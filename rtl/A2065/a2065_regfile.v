@@ -4,12 +4,13 @@
  * Am7990 LANCE register file + CSR doorbell.
  *
  * Replaces the DTACK-stretch bridge RPC (a2065_registers.v bridge mode).
- * The 68k reads/writes RAP/RDP at full bus speed.  RDP writes with side
- * effects raise a doorbell for the ARM daemon; the ARM writes status bits
- * back into the CSR shadow which the 68k polls at full speed.
+ * The 68k reads/writes RAP/RDP at full bus speed.  RDP writes raise a
+ * doorbell for the ARM daemon; the ARM writes status bits back into the
+ * CSR shadow which the 68k polls at full speed.
  *
- * No DTACK stretch on reads or RAP writes.  Only an RDP write while the
- * previous doorbell is still pending will stretch (back-pressure).
+ * No DTACK stretch on any access.  RDP writes always complete immediately;
+ * if the previous doorbell is still pending, the new write overwrites it
+ * (the ARM daemon only needs the latest register state).
  */
 
 module a2065_regfile (
@@ -21,7 +22,7 @@ module a2065_regfile (
     input  wire        cpu_as_n,
     input  wire        cpu_ds_n,
     input  wire [15:0] cpu_data_in,
-    output reg  [15:0] cpu_data_out,
+    output wire [15:0] cpu_data_out,
     output wire        regs_nrdy,
 
     input  wire [7:0]  card_base,
@@ -56,22 +57,26 @@ module a2065_regfile (
         csr_shadow[3] <= csr3_in;
     end
 
-    always @(posedge clk) begin
-        cpu_data_out <= 16'h0000;
-        if (sel_chipreg && cpu_rw) begin
-            if (is_rap)
-                cpu_data_out <= {9'b0, rap};
-            else begin
-                case (rap)
-                7'd88: cpu_data_out <= 16'h0001;
-                7'd89: cpu_data_out <= 16'h3003;
-                default: begin
-                    if (rap < 4)
-                        cpu_data_out <= csr_shadow[rap];
-                end
-                endcase
-            end
+    reg [15:0] chip_id_out;
+    always @(*) begin
+        chip_id_out = 16'h0000;
+        case (rap)
+        7'd88: chip_id_out = 16'h0001;
+        7'd89: chip_id_out = 16'h3003;
+        default: begin
+            if (rap < 4)
+                chip_id_out = csr_shadow[rap];
         end
+        endcase
+    end
+
+    assign cpu_data_out = (sel_chipreg && cpu_rw) ?
+                          (is_rap ? {9'b0, rap} : chip_id_out) : 16'h0000;
+
+    reg cmd_clear_s, cmd_clear_s1;
+    always @(posedge clk) begin
+        cmd_clear_s  <= cmd_clear;
+        cmd_clear_s1 <= cmd_clear_s;
     end
 
     always @(posedge clk or negedge rst_n) begin
@@ -81,10 +86,10 @@ module a2065_regfile (
             cmd_rap     <= 7'd0;
             cmd_data    <= 16'd0;
         end else begin
-        if (cmd_clear)
+        if (cmd_clear_s1)
             cmd_pending <= 1'b0;
 
-        if (sel_chipreg && !cpu_rw && !is_rap && !cmd_pending) begin
+        if (sel_chipreg && !cpu_rw && !is_rap) begin
             cmd_rap     <= rap;
             cmd_data    <= cpu_data_in;
             cmd_pending <= 1'b1;
@@ -95,10 +100,6 @@ module a2065_regfile (
         end
     end
 
-    reg cmd_pending_d;
-    always @(posedge clk)
-        cmd_pending_d <= cmd_pending;
-
-    assign regs_nrdy = sel_chipreg && !cpu_rw && !is_rap && cmd_pending_d;
+    assign regs_nrdy = 1'b0;
 
 endmodule
