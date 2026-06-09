@@ -40,6 +40,7 @@ module a2065_ddr3_mailbox (
     input  wire  [13:0] bram_req_addr,
     input  wire  [15:0] bram_req_wdata,
     input  wire         bram_req_rw,
+    input  wire  [1:0]  bram_req_be,
     output reg          bram_req_ack,
     output reg          bram_resp_valid,
     output reg  [15:0]  bram_resp_data,
@@ -90,6 +91,7 @@ module a2065_ddr3_mailbox (
     reg  [15:0] br_wdata;
     reg         br_rw;
     reg  [1:0]  br_lane;
+    reg  [1:0]  br_be;
 
     wire [28:0] br_ddr3_addr = DDR3_BASE + {17'b0, br_addr[13:2]};
 
@@ -104,6 +106,7 @@ module a2065_ddr3_mailbox (
     reg [13:0] bram_req_addr_s;
     reg [15:0] bram_req_wdata_s;
     reg        bram_req_rw_s;
+    reg [1:0]  bram_req_be_s;
 
     always @(posedge clk) begin
         bram_req_valid_s  <= bram_req_valid;
@@ -112,6 +115,7 @@ module a2065_ddr3_mailbox (
         bram_req_addr_s   <= bram_req_addr;
         bram_req_wdata_s  <= bram_req_wdata;
         bram_req_rw_s     <= bram_req_rw;
+        bram_req_be_s     <= bram_req_be;
     end
 
     wire bram_req_active = bram_req_valid_s1;
@@ -149,6 +153,7 @@ module a2065_ddr3_mailbox (
             bram_resp_valid <= 0;
             bram_resp_data  <= 0;
             br_lane         <= 0;
+            br_be           <= 2'b11;
         end else begin
             avl_read        <= 0;
             avl_write       <= 0;
@@ -171,6 +176,7 @@ module a2065_ddr3_mailbox (
                     br_addr      <= bram_req_addr_s;
                     br_wdata     <= bram_req_wdata_s;
                     br_rw        <= bram_req_rw_s;
+                    br_be        <= bram_req_be_s;
                     br_lane      <= bram_req_addr_s[1:0];
                     bram_req_ack <= 1'b1;
                     state        <= S_BR_CAPTURE;
@@ -282,11 +288,26 @@ module a2065_ddr3_mailbox (
 
             S_BR_RMW_RD_D: begin
                 if (avl_readdatavalid) begin
+                    // Merge only the enabled bytes of the target lane (br_be[1]
+                    // = high byte / UDS, br_be[0] = low byte / LDS); keep the
+                    // read-back bytes elsewhere so byte writes don't clobber
+                    // their pair or the 3 line-neighbours.
                     case (br_lane)
-                    2'd0: avl_writedata <= {avl_readdata[63:16], br_wdata};
-                    2'd1: avl_writedata <= {avl_readdata[63:32], br_wdata, avl_readdata[15:0]};
-                    2'd2: avl_writedata <= {avl_readdata[63:48], br_wdata, avl_readdata[31:0]};
-                    2'd3: avl_writedata <= {br_wdata, avl_readdata[47:0]};
+                    2'd0: avl_writedata <= {avl_readdata[63:16],
+                            br_be[1] ? br_wdata[15:8] : avl_readdata[15:8],
+                            br_be[0] ? br_wdata[7:0]  : avl_readdata[7:0]};
+                    2'd1: avl_writedata <= {avl_readdata[63:32],
+                            br_be[1] ? br_wdata[15:8] : avl_readdata[31:24],
+                            br_be[0] ? br_wdata[7:0]  : avl_readdata[23:16],
+                            avl_readdata[15:0]};
+                    2'd2: avl_writedata <= {avl_readdata[63:48],
+                            br_be[1] ? br_wdata[15:8] : avl_readdata[47:40],
+                            br_be[0] ? br_wdata[7:0]  : avl_readdata[39:32],
+                            avl_readdata[31:0]};
+                    2'd3: avl_writedata <= {
+                            br_be[1] ? br_wdata[15:8] : avl_readdata[63:56],
+                            br_be[0] ? br_wdata[7:0]  : avl_readdata[55:48],
+                            avl_readdata[47:0]};
                     endcase
                     avl_address    <= br_ddr3_addr;
                     avl_byteenable <= 8'hFF;

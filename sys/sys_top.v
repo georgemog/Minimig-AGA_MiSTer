@@ -687,6 +687,7 @@ wire        a2065_bram_req_valid;
 wire [13:0] a2065_bram_req_addr;
 wire [15:0] a2065_bram_req_wdata;
 wire        a2065_bram_req_rw;
+wire [1:0]  a2065_bram_req_be;
 wire        a2065_bram_req_ack;
 wire        a2065_bram_resp_valid;
 wire [15:0] a2065_bram_resp_data;
@@ -770,6 +771,7 @@ a2065_ddr3_mailbox a2065_mailbox_inst (
 	.bram_req_addr(a2065_bram_req_addr),
 	.bram_req_wdata(a2065_bram_req_wdata),
 	.bram_req_rw(a2065_bram_req_rw),
+	.bram_req_be(a2065_bram_req_be),
 	.bram_req_ack(a2065_bram_req_ack),
 	.bram_resp_valid(a2065_bram_resp_valid),
 	.bram_resp_data(a2065_bram_resp_data),
@@ -2030,6 +2032,7 @@ emu emu
 	.A2065_BRAM_REQ_ADDR(a2065_bram_req_addr),
 	.A2065_BRAM_REQ_WDATA(a2065_bram_req_wdata),
 	.A2065_BRAM_REQ_RW(a2065_bram_req_rw),
+	.A2065_BRAM_REQ_BE(a2065_bram_req_be),
 	.A2065_BRAM_REQ_ACK(a2065_bram_req_ack),
 	.A2065_BRAM_RESP_VALID(a2065_bram_resp_valid),
 	.A2065_BRAM_RESP_DATA(a2065_bram_resp_data)

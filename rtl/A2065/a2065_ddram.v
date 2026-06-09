@@ -25,7 +25,8 @@ module a2065_ddram (
     output wire [15:0]  cpu_data_out,
     input  wire         cpu_rw,      // 68k R/W: 1=read, 0=write
     input  wire         cpu_as_n,    // address strobe (active low)
-    input  wire         cpu_ds_n,    // data strobe   (active low, UDS&LDS)
+    input  wire         cpu_uds_n,   // upper data strobe (active low) — even byte D[15:8]
+    input  wire         cpu_lds_n,   // lower data strobe (active low) — odd byte  D[7:0]
     input  wire         sel,
     output wire         nrdy,
 
@@ -33,6 +34,7 @@ module a2065_ddram (
     output reg  [13:0]  bram_req_addr,
     output reg  [15:0]  bram_req_wdata,
     output reg          bram_req_rw,
+    output reg  [1:0]   bram_req_be,   // byte enables {high=UDS, low=LDS}
 
     input  wire         bram_req_ack_audio,
     input  wire         bram_resp_valid_audio,
@@ -44,8 +46,10 @@ module a2065_ddram (
     // data (cpu_data_in) are valid.  Keying off raw sel during the address
     // phase captured before hwr/lwr/data were valid.  DS deasserts between
     // bus cycles, giving a clean NR_DONE->NR_IDLE separation (no edge detect).
+    wire cpu_ds_n = cpu_uds_n & cpu_lds_n;   // any strobe asserted
     wire sel_br   = sel && cpu_addr[15] && !cpu_as_n && !cpu_ds_n;
     wire is_write = ~cpu_rw;
+    wire [1:0] req_be = {~cpu_uds_n, ~cpu_lds_n};
     wire [13:0] word_idx = cpu_addr[14:1];
 
     reg  [15:0] rd_data;
@@ -70,6 +74,7 @@ module a2065_ddram (
             bram_req_addr  <= 0;
             bram_req_wdata <= 0;
             bram_req_rw    <= 1'b0;
+            bram_req_be    <= 2'b11;
             ack_sync0  <= 1'b0;
             ack_sync1  <= 1'b0;
             rv_sync0   <= 1'b0;
@@ -102,6 +107,7 @@ module a2065_ddram (
                 bram_req_addr  <= word_idx;
                 bram_req_wdata <= cpu_data_in;
                 bram_req_rw    <= is_write;
+                bram_req_be    <= req_be;
                 bram_req_valid <= 1'b1;
                 sys_req        <= 1'b1;
             end

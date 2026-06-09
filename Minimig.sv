@@ -181,7 +181,8 @@ module emu
 	output        A2065_BRAM_REQ_VALID,
 	output [13:0] A2065_BRAM_REQ_ADDR,
 	output [15:0] A2065_BRAM_REQ_WDATA,
-	output        A2065_BRAM_REQ_RW
+	output        A2065_BRAM_REQ_RW,
+	output [1:0]  A2065_BRAM_REQ_BE
 );
 
 assign ADC_BUS  = 'Z;
@@ -834,6 +835,7 @@ minimig minimig
 	.a2065_bram_req_addr(A2065_BRAM_REQ_ADDR),
 	.a2065_bram_req_wdata(A2065_BRAM_REQ_WDATA),
 	.a2065_bram_req_rw(A2065_BRAM_REQ_RW),
+	.a2065_bram_req_be(A2065_BRAM_REQ_BE),
 	.a2065_bram_req_ack(A2065_BRAM_REQ_ACK),
 	.a2065_bram_resp_valid(A2065_BRAM_RESP_VALID),
 	.a2065_bram_resp_data(A2065_BRAM_RESP_DATA)
