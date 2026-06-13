@@ -659,7 +659,8 @@ wire  [7:0] ram2_byteenable;
 // Pieces: (1) A2065 wire decls below; (2) the ddr_svc instance is rewired from
 // ram2_* to arb_m0_* (search "arbiter master 0"); (3) a2065_ddr3_mailbox inst;
 // (4) avalon_arbiter (f2sdram2_arb) inst; (5) emu instance A2065_* connections
-// (search "A2065 BEGIN (emu)"). sysmem.sv stays upstream — no h2f bridge.
+// (search "A2065 BEGIN (emu)") — and give the preceding .USER_IN(user_in) a
+// trailing comma. sysmem.sv stays upstream — no h2f bridge.
 // ============================================================================
 wire        a2065_mailbox_int2;
 
