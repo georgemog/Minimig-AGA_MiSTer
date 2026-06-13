@@ -248,6 +248,10 @@ module minimig
 	output [15:0] toccata_aud_left,
 	output [15:0] toccata_aud_right,
 
+	// A2065 Ethernet
+	input         a2065_ena,
+	input   [7:0] a2065_base,
+
 	//user i/o
 	output  [1:0] cpucfg,
 	output  [2:0] cachecfg,
@@ -262,7 +266,28 @@ module minimig
 	input         ide_write,
 	input  [15:0] ide_writedata,
 	input         ide_read,
-	output [15:0] ide_readdata
+	output [15:0] ide_readdata,
+
+	// A2065 register file + doorbell
+	input         a2065_int2,
+
+	output        a2065_cmd_pending,
+	output [6:0]  a2065_cmd_rap,
+	output [15:0] a2065_cmd_data,
+	input         a2065_cmd_clear,
+	input  [15:0] a2065_csr0_in,
+	input  [15:0] a2065_csr1_in,
+	input  [15:0] a2065_csr2_in,
+	input  [15:0] a2065_csr3_in,
+
+	output        a2065_bram_req_valid,
+	output [13:0] a2065_bram_req_addr,
+	output [15:0] a2065_bram_req_wdata,
+	output        a2065_bram_req_rw,
+	output [1:0]  a2065_bram_req_be,
+	input         a2065_bram_req_ack,
+	input         a2065_bram_resp_valid,
+	input  [15:0] a2065_bram_resp_data
 );
 
 
@@ -316,11 +341,19 @@ wire        sel_reg;				//chip register select
 wire        sel_rtc;
 wire        sel_cia_a;			//cia A select
 wire        sel_cia_b;			//cia B select
-wire        sel_toccata;
+	wire        sel_toccata;
+	wire        sel_a2065;
 wire        int2;					//intterrupt 2
 wire        int3;					//intterrupt 3 
 wire        int6;					//intterrupt 6
 wire        int6_toccata;
+wire        a2065_int2_sync;
+reg         a2065_int2_s1, a2065_int2_s2;
+always @(posedge clk) begin
+    a2065_int2_s1 <= a2065_int2;
+    a2065_int2_s2 <= a2065_int2_s1;
+end
+assign a2065_int2_sync = a2065_int2_s2;
 wire        freeze;				//Action Replay freeze button
 wire        _fire0;				//joystick 1 fire signal to cia A
 wire        _fire1;				//joystick 2 fire signal to cia A
@@ -488,7 +521,7 @@ paula PAULA1
 	.sof(sof),
 	.strhor(strhor_paula),
 	.vblint(vbl_int),
-	.int2(int2|(ide_fast ? ide_ext_irq : gayle_irq)),
+	.int2(int2|(ide_fast ? ide_ext_irq : gayle_irq)|a2065_int2_sync),
 	.int3(int3),
 	.int6(int6 | int6_toccata),
 	._ipl(_iplx),
@@ -663,7 +696,7 @@ minimig_m68k_bridge CPU1
 	.dbr(dbr),
 	.dbs(dbs),
 	.xbs(xbs),
-	.nrdy(gayle_nrdy & rd_cyc),
+	.nrdy((gayle_nrdy & rd_cyc) | regs_nrdy | a2065_bram_nrdy),
 	.bls(bls),
 	.memory_config(memory_config[3:0]),
 	._as(_cpu_as),
@@ -784,6 +817,8 @@ gary GARY1
 	.hdc_ena(ide_ena & ~ide_fast), // Gayle decoding enable	
 	.toccata_ena(toccata_ena),
 	.toccata_base(toccata_base),
+	.a2065_ena(a2065_ena),
+	.a2065_base(a2065_base),
 	.ram_rd(ram_rd),
 	.ram_hwr(ram_hwr),
 	.ram_lwr(ram_lwr),
@@ -802,6 +837,7 @@ gary GARY1
 	.sel_gayle(sel_gayle),
 	.sel_rtc(sel_rtc),
 	.sel_toccata(sel_toccata),
+	.sel_a2065(sel_a2065),
 	.reset(reset),
 	.clk(clk),
 	.rom_readonly(rom_readonly),
@@ -892,6 +928,59 @@ toccata #(
 );
 
 //-------------------------------------------------------------------------------------
+// A2065 Ethernet: boardram (BRAM) + chip registers (local CSR)
+
+wire [15:0] a2065_boardram_out;
+wire        a2065_bram_nrdy;
+
+a2065_ddram a2065_ddram_inst (
+	.clk_sys              (clk),
+	.rst_n_sys            (~reset),
+	.cpu_addr             (cpu_address_out[23:1]),
+	.cpu_data_in          (cpu_data_out),
+	.cpu_data_out         (a2065_boardram_out),
+	.cpu_rw               (cpu_r_w),
+	.cpu_as_n             (_cpu_as),
+	.cpu_uds_n            (_cpu_uds),
+	.cpu_lds_n            (_cpu_lds),
+	.sel                  (sel_a2065),
+	.nrdy                 (a2065_bram_nrdy),
+	.bram_req_valid       (a2065_bram_req_valid),
+	.bram_req_addr        (a2065_bram_req_addr),
+	.bram_req_wdata       (a2065_bram_req_wdata),
+	.bram_req_rw          (a2065_bram_req_rw),
+	.bram_req_be          (a2065_bram_req_be),
+	.bram_req_ack_audio   (a2065_bram_req_ack),
+	.bram_resp_valid_audio(a2065_bram_resp_valid),
+	.bram_resp_data_audio (a2065_bram_resp_data)
+);
+
+wire [15:0] a2065_regs_dout;
+wire        regs_nrdy;
+
+a2065_regfile a2065_regfile_inst (
+	.clk            (clk),
+	.rst_n          (~reset),
+	.cpu_addr       ({cpu_address_out, 1'b0}),
+	.cpu_rw         (cpu_r_w),
+	.cpu_as_n       (_cpu_as),
+	.cpu_ds_n       (_cpu_uds & _cpu_lds),
+	.cpu_data_in    (cpu_data_out),
+	.cpu_data_out   (a2065_regs_dout),
+	.regs_nrdy      (regs_nrdy),
+	.card_base      (a2065_base),
+	.card_configured(a2065_ena),
+	.cmd_pending    (a2065_cmd_pending),
+	.cmd_rap        (a2065_cmd_rap),
+	.cmd_data       (a2065_cmd_data),
+	.cmd_clear      (a2065_cmd_clear),
+	.csr0_in        (a2065_csr0_in),
+	.csr1_in        (a2065_csr1_in),
+	.csr2_in        (a2065_csr2_in),
+	.csr3_in        (a2065_csr3_in)
+);
+
+//-------------------------------------------------------------------------------------
 
 //data multiplexer
 assign cpu_data_in[15:0]= gary_data_out[15:0]
@@ -899,7 +988,9 @@ assign cpu_data_in[15:0]= gary_data_out[15:0]
 							 | gayle_data_out[15:0]
 							 | cart_data_out[15:0]
 							 | rtc_out
-							 | toccata_out;
+							 | toccata_out
+							 | a2065_boardram_out
+							 | a2065_regs_dout;
 
 assign custom_data_out[15:0] = agnus_data_out[15:0]
 							 | paula_data_out[15:0]

@@ -7,6 +7,32 @@
 module emu
 (
 	`include "sys/emu_ports.vh"
+
+	// ===== A2065 BEGIN (core-specific networking extension) =====
+	, input         A2065_INT2
+	, input  [7:0]  A2065_MAC_BYTE2
+	, input  [7:0]  A2065_MAC_BYTE3
+	, input  [7:0]  A2065_MAC_BYTE4
+	, input  [7:0]  A2065_MAC_BYTE5
+
+	, output        A2065_CMD_PENDING
+	, output [6:0]  A2065_CMD_RAP
+	, output [15:0] A2065_CMD_DATA
+	, input         A2065_CMD_CLEAR
+	, input  [15:0] A2065_CSR0_IN
+	, input  [15:0] A2065_CSR1_IN
+	, input  [15:0] A2065_CSR2_IN
+	, input  [15:0] A2065_CSR3_IN
+
+	, input         A2065_BRAM_REQ_ACK
+	, input         A2065_BRAM_RESP_VALID
+	, input  [15:0] A2065_BRAM_RESP_DATA
+	, output        A2065_BRAM_REQ_VALID
+	, output [13:0] A2065_BRAM_REQ_ADDR
+	, output [15:0] A2065_BRAM_REQ_WDATA
+	, output        A2065_BRAM_REQ_RW
+	, output [1:0]  A2065_BRAM_REQ_BE
+	// ===== A2065 END =====
 );
 
 assign ADC_BUS  = 'Z;
@@ -283,6 +309,8 @@ wire        ramshared;
 
 wire [7:0] toccata_base;
 wire toccata_ena;
+wire a2065_ena;
+wire [7:0] a2065_base;
 
 cpu_wrapper cpu_wrapper
 (
@@ -318,6 +346,12 @@ cpu_wrapper cpu_wrapper
 	.bootrom      (bootrom         ),
 
 	.toccata_ena  (toccata_ena     ),
+	.a2065_ena    (a2065_ena       ),
+	.a2065_base   (a2065_base      ),
+	.a2065_mac_byte2(A2065_MAC_BYTE2),
+	.a2065_mac_byte3(A2065_MAC_BYTE3),
+	.a2065_mac_byte4(A2065_MAC_BYTE4),
+	.a2065_mac_byte5(A2065_MAC_BYTE5),
 	.toccata_base (toccata_base    ),
 	
 	.ramsel       (ram_sel         ),
@@ -379,8 +413,7 @@ sdram_ctrl ram1
 
 wire [15:0] ram_dout2;
 wire        ram_ready2;
-wire  [7:0] DDRAM_BE_S;
-   
+
 ddram_ctrl ram2
 (
 	.sysclk       (clk_114         ),
@@ -616,6 +649,8 @@ minimig minimig
 	//toccata soundcard
 	.toccata_ena  (toccata_ena),
 	.toccata_base (toccata_base),
+	.a2065_ena  (a2065_ena),
+	.a2065_base (a2065_base),
 	.toccata_aud_left (toccata_aud_left),
 	.toccata_aud_right(toccata_aud_right),
 	
@@ -633,7 +668,27 @@ minimig minimig
 	.ide_write    (ide_wr           ),
 	.ide_writedata(ide_dout         ),
 	.ide_read     (ide_rd           ),
-	.ide_readdata (ide_c_readdata   )
+	.ide_readdata (ide_c_readdata   ),
+
+	.a2065_int2(A2065_INT2),
+
+	.a2065_cmd_pending(A2065_CMD_PENDING),
+	.a2065_cmd_rap(A2065_CMD_RAP),
+	.a2065_cmd_data(A2065_CMD_DATA),
+	.a2065_cmd_clear(A2065_CMD_CLEAR),
+	.a2065_csr0_in(A2065_CSR0_IN),
+	.a2065_csr1_in(A2065_CSR1_IN),
+	.a2065_csr2_in(A2065_CSR2_IN),
+	.a2065_csr3_in(A2065_CSR3_IN),
+
+	.a2065_bram_req_valid(A2065_BRAM_REQ_VALID),
+	.a2065_bram_req_addr(A2065_BRAM_REQ_ADDR),
+	.a2065_bram_req_wdata(A2065_BRAM_REQ_WDATA),
+	.a2065_bram_req_rw(A2065_BRAM_REQ_RW),
+	.a2065_bram_req_be(A2065_BRAM_REQ_BE),
+	.a2065_bram_req_ack(A2065_BRAM_REQ_ACK),
+	.a2065_bram_resp_valid(A2065_BRAM_RESP_VALID),
+	.a2065_bram_resp_data(A2065_BRAM_RESP_DATA)
 );
 
 // power led control

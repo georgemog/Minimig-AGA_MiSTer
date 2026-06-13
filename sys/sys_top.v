@@ -652,6 +652,34 @@ sysmem_lite sysmem
 wire [28:0] ram2_address;
 wire  [7:0] ram2_burstcount;
 wire  [7:0] ram2_byteenable;
+
+// ============================================================================
+// ===== A2065 BEGIN — core-specific DDR3 doorbell mailbox + f2sdram2 arbiter ==
+// Re-apply this block after any upstream "Update sys." overwrites sys_top.v.
+// Pieces: (1) A2065 wire decls below; (2) the ddr_svc instance is rewired from
+// ram2_* to arb_m0_* (search "arbiter master 0"); (3) a2065_ddr3_mailbox inst;
+// (4) avalon_arbiter (f2sdram2_arb) inst; (5) emu instance A2065_* connections
+// (search "A2065 BEGIN (emu)"). sysmem.sv stays upstream — no h2f bridge.
+// ============================================================================
+wire        a2065_mailbox_int2;
+
+wire        a2065_cmd_pending;
+wire [6:0]  a2065_cmd_rap;
+wire [15:0] a2065_cmd_data;
+wire        a2065_cmd_clear;
+wire [15:0] a2065_csr0_out;
+wire [15:0] a2065_csr1_out;
+wire [15:0] a2065_csr2_out;
+wire [15:0] a2065_csr3_out;
+
+wire        a2065_bram_req_valid;
+wire [13:0] a2065_bram_req_addr;
+wire [15:0] a2065_bram_req_wdata;
+wire        a2065_bram_req_rw;
+wire [1:0]  a2065_bram_req_be;
+wire        a2065_bram_req_ack;
+wire        a2065_bram_resp_valid;
+wire [15:0] a2065_bram_resp_data;
 wire        ram2_waitrequest;
 wire [63:0] ram2_readdata;
 wire [63:0] ram2_writedata;
@@ -660,19 +688,41 @@ wire        ram2_read;
 wire        ram2_write;
 wire  [7:0] ram2_bcnt;
 
+// Arbiter: ddr_svc (m0) + A2065 DDR3 test (m1)
+wire [28:0] arb_m0_address,    arb_m1_address;
+wire  [7:0] arb_m0_burstcount, arb_m1_burstcount;
+wire        arb_m0_read,       arb_m1_read;
+wire [63:0] arb_m0_readdata,   arb_m1_readdata;
+wire        arb_m0_readdatavalid, arb_m1_readdatavalid;
+wire [63:0] arb_m0_writedata,  arb_m1_writedata;
+wire  [7:0] arb_m0_byteenable, arb_m1_byteenable;
+wire        arb_m0_write,      arb_m1_write;
+wire        arb_m0_waitrequest, arb_m1_waitrequest;
+wire [28:0] arb_s_address;
+wire  [7:0] arb_s_burstcount;
+wire        arb_s_read, arb_s_write;
+wire [63:0] arb_s_readdata, arb_s_writedata;
+wire  [7:0] arb_s_byteenable;
+wire        arb_s_waitrequest, arb_s_readdatavalid;
+
+assign arb_s_readdata     = ram2_readdata;
+assign arb_s_readdatavalid= ram2_readdatavalid;
+assign arb_s_waitrequest  = ram2_waitrequest;
+
+// ddr_svc → arbiter master 0
 ddr_svc ddr_svc
 (
 	.clk(clk_audio),
 
-	.ram_waitrequest(ram2_waitrequest),
-	.ram_burstcnt(ram2_burstcount),
-	.ram_addr(ram2_address),
-	.ram_readdata(ram2_readdata),
-	.ram_read_ready(ram2_readdatavalid),
-	.ram_read(ram2_read),
-	.ram_writedata(ram2_writedata),
-	.ram_byteenable(ram2_byteenable),
-	.ram_write(ram2_write),
+	.ram_waitrequest(arb_m0_waitrequest),
+	.ram_burstcnt(arb_m0_burstcount),
+	.ram_addr(arb_m0_address),
+	.ram_readdata(arb_m0_readdata),
+	.ram_read_ready(arb_m0_readdatavalid),
+	.ram_read(arb_m0_read),
+	.ram_writedata(arb_m0_writedata),
+	.ram_byteenable(arb_m0_byteenable),
+	.ram_write(arb_m0_write),
 	.ram_bcnt(ram2_bcnt),
 
 `ifndef MISTER_DISABLE_ALSA
@@ -689,6 +739,87 @@ ddr_svc ddr_svc
 	.ch1_req(pal_req),
 	.ch1_ready(pal_wr)
 );
+
+// A2065 DDR3 mailbox (doorbell + boardram window + CSR/INT poll)
+a2065_ddr3_mailbox a2065_mailbox_inst (
+	.clk(clk_audio),
+	.rst_n(~reset),
+
+	.cmd_pending(a2065_cmd_pending),
+	.cmd_rap(a2065_cmd_rap),
+	.cmd_data(a2065_cmd_data),
+	.cmd_clear(a2065_cmd_clear),
+
+	.csr0_out(a2065_csr0_out),
+	.csr1_out(a2065_csr1_out),
+	.csr2_out(a2065_csr2_out),
+	.csr3_out(a2065_csr3_out),
+	.a2065_int2(a2065_mailbox_int2),
+
+	.bram_req_valid(a2065_bram_req_valid),
+	.bram_req_addr(a2065_bram_req_addr),
+	.bram_req_wdata(a2065_bram_req_wdata),
+	.bram_req_rw(a2065_bram_req_rw),
+	.bram_req_be(a2065_bram_req_be),
+	.bram_req_ack(a2065_bram_req_ack),
+	.bram_resp_valid(a2065_bram_resp_valid),
+	.bram_resp_data(a2065_bram_resp_data),
+
+	.avl_address(arb_m1_address),
+	.avl_burstcount(arb_m1_burstcount),
+	.avl_read(arb_m1_read),
+	.avl_readdata(arb_m1_readdata),
+	.avl_readdatavalid(arb_m1_readdatavalid),
+	.avl_writedata(arb_m1_writedata),
+	.avl_byteenable(arb_m1_byteenable),
+	.avl_write(arb_m1_write),
+	.avl_waitrequest(arb_m1_waitrequest)
+);
+
+// Arbiter drives the actual f2sdram2 port
+avalon_arbiter #(
+	.ADDR_W(29), .DATA_W(64), .BURST_W(8), .BYTE_W(8)
+) f2sdram2_arb (
+	.clk(clk_audio),
+	.rst(reset),
+	.m0_address(arb_m0_address),
+	.m0_burstcount(arb_m0_burstcount),
+	.m0_read(arb_m0_read),
+	.m0_readdata(arb_m0_readdata),
+	.m0_readdatavalid(arb_m0_readdatavalid),
+	.m0_writedata(arb_m0_writedata),
+	.m0_byteenable(arb_m0_byteenable),
+	.m0_write(arb_m0_write),
+	.m0_waitrequest(arb_m0_waitrequest),
+	.m1_address(arb_m1_address),
+	.m1_burstcount(arb_m1_burstcount),
+	.m1_read(arb_m1_read),
+	.m1_readdata(arb_m1_readdata),
+	.m1_readdatavalid(arb_m1_readdatavalid),
+	.m1_writedata(arb_m1_writedata),
+	.m1_byteenable(arb_m1_byteenable),
+	.m1_write(arb_m1_write),
+	.m1_waitrequest(arb_m1_waitrequest),
+	.s_address(arb_s_address),
+	.s_burstcount(arb_s_burstcount),
+	.s_read(arb_s_read),
+	.s_readdata(arb_s_readdata),
+	.s_readdatavalid(arb_s_readdatavalid),
+	.s_writedata(arb_s_writedata),
+	.s_byteenable(arb_s_byteenable),
+	.s_write(arb_s_write),
+	.s_waitrequest(arb_s_waitrequest)
+);
+
+// Arbiter output → f2sdram2 port wires
+assign ram2_address    = arb_s_address;
+assign ram2_burstcount = arb_s_burstcount;
+assign ram2_read       = arb_s_read;
+assign ram2_writedata  = arb_s_writedata;
+assign ram2_byteenable = arb_s_byteenable;
+assign ram2_write      = arb_s_write;
+// ===== A2065 END (arbiter/mailbox) — emu A2065_* connections are separate ====
+// ============================================================================
 
 wire clk_pal = clk_audio;
 
@@ -1872,7 +2003,29 @@ emu emu
 	.UART_DSR(uart_dtr),
 
 	.USER_OUT(user_out),
-	.USER_IN(user_in)
+	.USER_IN(user_in),
+
+	// ===== A2065 BEGIN (emu) — re-append after upstream Update sys. =====
+	.A2065_INT2(a2065_mailbox_int2),
+
+	.A2065_CMD_PENDING(a2065_cmd_pending),
+	.A2065_CMD_RAP(a2065_cmd_rap),
+	.A2065_CMD_DATA(a2065_cmd_data),
+	.A2065_CMD_CLEAR(a2065_cmd_clear),
+	.A2065_CSR0_IN(a2065_csr0_out),
+	.A2065_CSR1_IN(a2065_csr1_out),
+	.A2065_CSR2_IN(a2065_csr2_out),
+	.A2065_CSR3_IN(a2065_csr3_out),
+
+	.A2065_BRAM_REQ_VALID(a2065_bram_req_valid),
+	.A2065_BRAM_REQ_ADDR(a2065_bram_req_addr),
+	.A2065_BRAM_REQ_WDATA(a2065_bram_req_wdata),
+	.A2065_BRAM_REQ_RW(a2065_bram_req_rw),
+	.A2065_BRAM_REQ_BE(a2065_bram_req_be),
+	.A2065_BRAM_REQ_ACK(a2065_bram_req_ack),
+	.A2065_BRAM_RESP_VALID(a2065_bram_resp_valid),
+	.A2065_BRAM_RESP_DATA(a2065_bram_resp_data)
+	// ===== A2065 END (emu) =====
 );
 
 endmodule

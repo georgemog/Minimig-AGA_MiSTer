@@ -17,6 +17,30 @@ set_false_path -from {emu|minimig|USERIO1|ide_config*}
 set_false_path -from {emu|minimig|USERIO1|bootrom}
 set_false_path -from {emu|minimig|CPU1|halt}
 
+# A2065 boardram: OBSOLETE under the flat-DDR3 doorbell architecture.
+# The old TDP-BRAM instance (a2065_boardram_inst) no longer exists — boardram is
+# now a DDR3 window inside a2065_ddram_inst, reached over a 2-FF level-detect CDC
+# handshake (clk_sys ↔ clk_audio). That CDC is self-timed, not a multicycle path.
+# The former multicycle on a2065_boardram_inst|* matched nothing (silently ignored).
+# Removed. If the fitter reports real a2065_ddram_inst CDC violations, add a
+# targeted set_false_path/set_max_delay derived from report_timing — do not guess.
+
+# yc_out chroma LUT: multicycle retained from the old bridge, where boardram BRAM
+# placement congestion pushed this path to -0.471ns. The flat-DDR3 design removes
+# that BRAM, so this exception may now be UNNECESSARY. Re-validate against the
+# merged fitter run (R3); keep only if report_timing still shows the path marginal.
+set_multicycle_path -from {yc_out|chroma_LUT_BURST[*]} \
+                    -to   {yc_out|phase[*].u[*]} -setup 2
+set_multicycle_path -from {yc_out|chroma_LUT_BURST[*]} \
+                    -to   {yc_out|phase[*].u[*]} -hold 1
+
+# A2065 MAC bytes: clk_audio → clk_sys cross-domain (registered in cpu_wrapper)
+set_false_path -from {*a2065_mailbox_inst|mac_byte*} -to {emu|cpu_wrapper|mac_nibble_*}
+
+# emu PLL cross-clock: counter[1]→counter[0] marginal path
+set_multicycle_path -setup 2 -from [get_clocks "emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter\[1\].output_counter|divclk"] -to [get_clocks "emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter\[0\].output_counter|divclk"]
+set_multicycle_path -hold 1 -from [get_clocks "emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter\[1\].output_counter|divclk"] -to [get_clocks "emu|pll|pll_inst|altera_pll_i|cyclonev_pll|counter\[0\].output_counter|divclk"]
+
 #these constraints aren't really correct, but help fitting.
 #28MHz pixel clock might be affected when scandoubler fx is used.
 set_multicycle_path -to {*Hq2x*} -setup 2
