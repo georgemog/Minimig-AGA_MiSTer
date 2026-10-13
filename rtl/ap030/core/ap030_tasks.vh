@@ -24,6 +24,28 @@ task dreq;
 	end
 endtask
 
+// Complete an effective address and launch a generic operand read in the
+// same clock. The read uses this address and the EA's program/data space;
+// ea and ea_pc are still being registered, so neither is read back here.
+task ea_ready;
+ input [31:0] addr;
+ begin
+  ea <= addr;
+  if (ea_ret == S_GEN_RD)
+   dreq(addr, g_size, 1'b1, 32'd0,
+        (ea_pcrel && PCREL_PROGRAM_SPACE) ? fc_prog : fc_data,
+        1'b0, 1'b0, (g_srck == SK_EA) ? DW_SRC : DW_DST,
+        g_move_mem ? S_MOVE_DEA : nx);
+  else if (ea_ret == S_MOVE_WR) begin
+   // MOVE's source and ALU controls are already registered. Its store
+   // and flags can be issued with the completed destination address.
+   sr[4:0] <= alu_f;
+   finish;
+   wr(addr, g_size, src, S_FETCH);
+  end else state <= ea_ret;
+ end
+endtask
+
 // convenience wrappers
 task rd;   input [31:0] addr; input [1:0] size; input [3:0] dst_sel; input [7:0] ret;
 	begin dreq(addr, size, 1'b1, 32'd0, (ea_pc && PCREL_PROGRAM_SPACE) ? fc_prog : fc_data, 1'b0, 1'b0, dst_sel, ret); end endtask
@@ -87,15 +109,26 @@ task exc_go;
 		exc_vec <= vec; exc_fmt <= fmt; exc_pc <= pcv; exc_ia <= iav;
 		exc_sr <= sr;
 		exc_cnt <= cnt; exc_dw_dst <= dw_dst; exc_dw_ret <= dw_ret;
-		exc_is_irq <= 1'b0; exc_is_reset <= 1'b0; exc_throw <= 1'b0;
+		exc_is_irq <= 1'b0; exc_is_reset <= 1'b0; exc_throw <= 1'b0; exc_late <= 1'b0;
 		exc_busfault <= (vec == `VEC_BUSERR) || (vec == `VEC_ADDRERR);
-		// T1 tracing survives the instruction traps (UM 8.1.7 / 8.1.12)
-		trace_after_exc <= (tr_t1 | tr_t0) && ((vec == `VEC_DIVZERO) || (vec == `VEC_CHK) ||
-		                   (vec == `VEC_TRAPCC) || (vec[7:4] == 4'h2 || vec[7:4] == 4'h3 && vec[7:0] < 8'd48));
+		// A trace pending for an instruction whose own exception is part of
+		// its execution is taken after that exception's processing (UM 8.1.4,
+		// 8.1.12 Table 8-5): TRAP #n, TRAPcc/TRAPV/cpTRAPcc, CHK/CHK2 and divide
+		// by zero (instruction traps, traced in both trace modes, UM 8.1.7),
+		// and a coprocessor post-instruction exception (UM 10.5.2.5).  Decided
+		// by the instruction, not the vector: an interrupt or a coprocessor
+		// can supply any vector, and a pre-instruction exception (not
+		// executed) or a mid-instruction one (resumed) has no trace now
+		trace_after_exc <= (vec != `VEC_BUSERR) &&
+		                   (((state == S_TRAP || state == S_TRAPCC || state == S_CHK || state == S_CHK2_2 ||
+		                      state == S_DIVZ || state == S_CPTRAP2) && (tr_t1 | tr_t0)) ||
+		                    (state == S_CP_EXC && sub[1:0] == 2'd2 && (tr_t1 | cp_trace_wait)));
 		trace_pend <= 1'b0;
 		if (vec == `VEC_BUSERR || vec == `VEC_ADDRERR || vec == `VEC_SPURIOUS || vec == `VEC_FLINE ||
 		    (vec >= `VEC_AUTOVEC && vec < `VEC_TRAP)) status_cnt <= 2'd3;
-		state <= S_EXC0;
+		// a bus/address error stacks its frame after the posted writes
+		// before it (see the posted write faults in ap030_core.v)
+		state <= (((vec == `VEC_BUSERR) || (vec == `VEC_ADDRERR)) && d_wpend) ? S_EXCW : S_EXC0;
 	end
 endtask
 
@@ -135,15 +168,42 @@ task exc_data_fault;
 	end
 endtask
 
-// a posted write that failed, reported at a boundary
+// a posted write that failed, reported at a boundary from its record
 task exc_late_fault;
 	begin
 		late_fault_pend <= 1'b0;
+		d_unhold <= 1'b1;               // no access waits at a boundary
 		capture_pipe;
+		exc_fa <= lf_fa; exc_dob <= lf_dob;
 		exc_got <= 3'd0; exc_partial <= 32'd0;
-		exc_ssw <= {1'b0, 1'b0, ~w0_v | w0_f, ~w1_v | w1_f, 3'b000, exc_ssw[8:0]};
+		exc_ssw <= {1'b0, 1'b0, ~w0_v | w0_f, ~w1_v | w1_f, 3'b000, lf_ssw};
 		exc_rk <= RK_BOUNDARY; exc_rs <= S_FETCH;
 		exc_go(`VEC_BUSERR, `FMT_SHORTBUS, scan_pc, 32'd0);
+		exc_late <= 1'b1;
+	end
+endtask
+
+// A posted write failed while the instruction in execution waits with its
+// next data access, which has not reached the bus (the memory system holds
+// it).  The bus error is taken now, mid-instruction: a long frame with the
+// instruction's address as the PC, DF and the record of the failed write
+// (UM 8.1.2, Table 8-6: "may not be the instruction that generated the
+// faulted bus cycle").  The held access is dropped and kept in the frame;
+// RTE reruns the write (DF set) and then issues it (S_RTE_HELD).
+task exc_held_fault;
+	begin
+		late_fault_pend <= 1'b0;
+		d_cancel <= 1'b1;
+		capture_pipe;
+		exc_fa <= lf_fa; exc_dob <= lf_dob;
+		exc_got <= 3'd0;
+		exc_partial <= d_addr;
+		exc_dib <= d_wdata;
+		exc_held <= {d_size, d_rw, d_fc, d_rmc, d_rmc_last, d_nocache, cpu_flt_ill, cpu_flt_fline};
+		cpu_flt_ill <= 1'b0; cpu_flt_fline <= 1'b0;
+		exc_ssw <= {1'b0, 1'b0, ~w0_v | w0_f, ~w1_v | w1_f, 3'b000, lf_ssw};
+		exc_rk <= RK_HELD; exc_rs <= S_DWAIT;
+		exc_go(`VEC_BUSERR, `FMT_LONGBUS, pc_i, 32'd0);
 	end
 endtask
 
@@ -235,7 +295,7 @@ task dispatch;
 			state <= S_EA;
 			ea_ret <= S_GEN_RD;
 		end else if (dc_dstk == DK_EA) begin
-			if (dc_move_mem) state <= S_MOVE_DEA;
+			if (dc_move_mem) begin ea_sel <= 1'b1; ea_ret <= S_MOVE_WR; state <= S_EA; end
 			else begin state <= S_EA; ea_ret <= dc_dstrd ? S_GEN_RD : dc_first; end
 		end else if (dc_dstk == DK_IMM) begin
 			state <= S_IMM; imm_tgt <= 1'b1; imm_ret <= dc_first;

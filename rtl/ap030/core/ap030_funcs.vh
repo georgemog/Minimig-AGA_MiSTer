@@ -99,8 +99,11 @@ function [2:0] mmu_fc; input [4:0] f; input [2:0] dn;
 		else mmu_fc = sfc;
 	end
 endfunction
+// any other value (11xxx, 0001x-0011x) is not a supported encoding and takes
+// the F-line exception (UM 9.8; the UM 3.3.3 descriptions list only these;
+// WinUAE mmu_op30_helper_get_fc rejects 11xxx too)
 function mmu_fc_ok; input [4:0] f;
-	begin mmu_fc_ok = f[4] || (f[3] && !f[4]) || (f[4:1] == 4'd0); end endfunction
+	begin mmu_fc_ok = (f[4] && !f[3]) || (f[3] && !f[4]) || (f[4:1] == 4'd0); end endfunction
 
 // coprocessor "valid EA" categories (UM Table 10-4) against dw[5:0]
 function cp_ea_ok; input [2:0] cat;
@@ -112,7 +115,7 @@ function cp_ea_ok; input [2:0] cat;
 			3'b011: cp_ea_ok = ea_alt;
 			3'b100: cp_ea_ok = ea_ctrl;
 			3'b101: cp_ea_ok = ea_data;
-			3'b110: cp_ea_ok = ea_mem;
+			3'b110: cp_ea_ok = ea_mem | ea_imm;   // memory includes immediate (MC68030 UM table 10-4)
 			default: cp_ea_ok = ea_any;
 		endcase
 	end

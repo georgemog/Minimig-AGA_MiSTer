@@ -24,6 +24,8 @@ module ap030_core
 )
 (
 	input             clk,
+	input             ce,          // clock enable: the core advances on enabled rising edges
+	input             ce_f,        // ... and on the falling edge after an enabled rising edge
 	input             rst,
 
 	// ---- data port (ap030_memsys) ---------------------------------------
@@ -37,6 +39,7 @@ module ap030_core
 	output reg        d_iack,
 	output reg        d_nocache,    // this read bypasses the data cache (system option, see ap030_top)
 	input             nmi_vec_nocache,
+	input             fetch_lazy,   // prefetch as Hatari's 68030 model (see ap030_top)
 	output reg  [2:0] d_fc,
 	output reg [31:0] d_wdata,
 	input             d_ack,
@@ -46,6 +49,9 @@ module ap030_core
 	input             d_iack_berr,
 	input             d_late_fault,
 	input             d_wpend,
+	input             d_held,       // the access waits behind a posted write fault
+	output reg        d_cancel,     // pulse: drop it (the instruction is suspended)
+	output reg        d_unhold,     // pulse: let it go
 	input      [31:0] f_addr,
 	input       [2:0] f_fc,
 	input       [1:0] f_size,
@@ -105,15 +111,24 @@ module ap030_core
 	output     [15:0] dbg_sr,
 	output      [7:0] dbg_state,
 	output reg        dbg_inst,     // pulse: an instruction was dispatched (statistics)
-	output     [31:0] dbg_vbr,      // VBR (system glue: NMI vector address)
-	// exception observation (debug capture): valid while dbg_state is S_EXC0
-	output      [7:0] dbg_vec,
-	output     [31:0] dbg_epc,
-	output     [15:0] dbg_esr,
-	output     [15:0] dbg_ir,
-	output     [31:0] dbg_ea,
-	output     [31:0] dbg_isp,
-	output    [127:0] dbg_trace     // per-clock sequencer and register file view
+	// timing hooks for an external timing model (one processor clock each):
+	// instruction words taken from the prefetch queue; a word-size
+	// multiply/divide started (1 MULU.W/MULS.W, 2 DIVU.W, 3 DIVS.W)
+	output reg  [1:0] tm_pop,
+	output reg  [1:0] tm_md,
+	// the prefetch queue for an external pipeline model (words from scan_pc
+	// on; valid count; a flush or reload of the queue in the last clock),
+	// and that model's stop point: with fetch_lazy no longword is fetched
+	// once the next word to take is at fetch_stop - 2 or beyond
+	output     [95:0] tm_q,
+	output      [2:0] tm_qn,
+	output     [31:0] tm_scan,
+	output reg        tm_flush,
+	input             fetch_stop_v,
+	input      [31:0] fetch_stop,
+	input             fetch_scan_v,  // the model is scanning: wait until it has passed
+	input      [31:0] fetch_scan_to, //   the word two ahead (or the words below the fetch)
+	output     [31:0] dbg_vbr       // VBR (system glue: NMI vector address)
 );
 
 `include "core/ap030_states.vh"
@@ -149,7 +164,7 @@ reg  [31:0] sp_wdata;
 wire [31:0] usp_q, isp_q, msp_q;
 
 ap030_regfile rf (
-	.clk(clk), .rst(rst), .sr_s(sr_s), .sr_m(sr_m),
+	.clk(clk), .ce(ce), .rst(rst), .sr_s(sr_s), .sr_m(sr_m),
 	.we(rf_we), .waddr(rf_waddr), .wact(rf_wact), .wdata(rf_wdata),
 	.raddr_a(ra_a), .rdata_a(rf_a), .raddr_b(ra_b), .rdata_b(rf_b), .raddr_c(ra_c), .rdata_c(rf_c),
 	.raddr_d(ra_d), .rdata_d(rf_d), .raddr_e(ra_e), .rdata_e(rf_e),
@@ -168,14 +183,14 @@ wire [31:0] alu_r;
 // ALU operand selection per state (see ap030_exec.vh)
 `define ALU_SET(op_, sz_, a_, b_, cnt_) begin alu_op = op_; alu_size = sz_; alu_a = a_; alu_b = b_; alu_cnt = cnt_; end
 wire  [4:0] alu_f;
-ap030_alu alu (.clk(clk), .op(alu_op), .size(alu_size), .shcnt(alu_cnt), .a(alu_a), .b(alu_b),
+ap030_alu alu (.clk(clk), .ce(ce), .op(alu_op), .size(alu_size), .shcnt(alu_cnt), .a(alu_a), .b(alu_b),
                .flags_in(sr[4:0]), .result(alu_r), .flags_out(alu_f));
 
 reg         md_start, md_div, md_sign;
 reg  [31:0] md_a, md_hi, md_lo;
 wire        md_done, md_ovf;
 wire [31:0] md_rhi, md_rlo;
-ap030_muldiv md (.clk(clk), .rst(rst), .start(md_start), .is_div(md_div), .sign_op(md_sign),
+ap030_muldiv md (.clk(clk), .ce(ce), .rst(rst), .start(md_start), .is_div(md_div), .sign_op(md_sign),
                  .op_a(md_a), .op_hi(md_hi), .op_lo(md_lo), .done(md_done), .res_hi(md_rhi),
                  .res_lo(md_rlo), .ovf(md_ovf));
 
@@ -186,11 +201,18 @@ reg [15:0] pq [0:5];
 reg  [5:0] pq_v, pq_f;
 reg  [2:0] pq_n;
 reg [31:0] scan_pc;        // address of pq[0] (stage C)
+reg  [5:0] stop_wait;      // fetch_lazy: clocks the sequencer has been starved of instruction words
+reg        due_v;          // the next longword's fetch is due ...
+reg [31:0] due_scan;       // ... since the consumption reached this word
+wire       stop_starve = (stop_wait == 6'd63);
+assign tm_q    = {pq[0], pq[1], pq[2], pq[3], pq[4], pq[5]};
+assign tm_qn   = pq_n;
+assign tm_scan = scan_pc;
 reg [31:0] fetch_pc;       // next longword to request
 reg        fetch_skip;     // discard the first word of the next fetched longword
 reg  [1:0] fetch_out;      // fetches outstanding (they return in order, two at most)
 reg  [1:0] fetch_disc;     // the first of them belong to a flushed stream
-reg        fetch_hold;     // no prefetching (halt, stop, refill of a bad address)
+reg        fetch_hold;     // no prefetching (halt, stop, refill of a bad address, RESET instruction)
 reg        refill_p;       // REFILL pulse (posedge)
 // per-clock pipe commands from the sequencer
 reg  [1:0] pop_n;
@@ -212,14 +234,14 @@ wire        have2 = pq_v[0] & pq_v[1];
 // interrupt synchronizer (UM 8.1.9: two consecutive falling-edge samples)
 //---------------------------------------------------------------------------
 reg [2:0] ipl_s1, ipl_s2;
-always @(negedge clk) begin
+always @(negedge clk) if (ce_f) begin
 	ipl_s1 <= ~ipl_n;
 	ipl_s2 <= ipl_s1;
 end
 reg [2:0] irq_lvl;         // recognized level
 reg       nmi_edge;        // a transition to level 7 has not been serviced
 reg       irq_taken7;      // pulse from the sequencer: level 7 accepted
-always @(posedge clk) begin
+always @(posedge clk) if (ce) begin
 	if (rst) begin irq_lvl <= 3'd0; nmi_edge <= 1'b0; end
 	else begin
 		if (ipl_s1 == ipl_s2) begin
@@ -257,6 +279,10 @@ reg        tr_t1, tr_t0;   // trace bits at the start of the instruction
 reg        flow;           // the instruction changed the program flow (T0 trace)
 reg        trace_pend;
 reg        late_fault_pend;
+// the posted write fault waiting to be taken (its own record, so that a
+// fault arriving while another exception is prepared leaves that alone)
+reg [31:0] lf_fa, lf_dob;  // fault address, data output buffer
+reg  [8:0] lf_ssw;         // SSW DF RM RW SIZE 0 FC
 reg        stopped;
 reg        halted_r;
 reg [31:0] fr [0:22];      // RTE frame image (23 longwords)
@@ -282,6 +308,11 @@ reg        exc_is_irq;
 reg        exc_is_reset;
 reg        exc_busfault;   // processing a bus/address error: another fault halts
 reg        exc_throw;      // building the throwaway frame
+reg        exc_late;       // the exception is a posted write fault (exc_late_fault)
+// the access an instruction was suspended at (behind a posted write fault):
+// its size, R/W, FC, RMC, last RMC cycle, no-cache, and the BKPT/coprocessor
+// fault flags, as frame word 45; address and data use exc_partial/exc_dib
+reg [10:0] exc_held;
 reg [31:0] exc_sp;         // frame base
 reg  [5:0] exc_len;        // frame length in longwords
 reg  [2:0] exc_ilvl;
@@ -332,18 +363,22 @@ reg        exc_active;     // exception processing in progress
 reg        cpu_flt_ill;    // a bus error on this CPU-space cycle is an illegal instruction (BKPT)
 reg        cpu_flt_fline;  // ... is an F-line exception (first coprocessor access)
 reg        iack_pc_i;      // interrupt frame carries the instruction address (Busy primitive)
+reg        iack_cpmid;     // interrupt frame is a coprocessor mid-instruction frame (null, CA, IA)
+
+// The sequencer is in a state that takes words from the instruction queue
+// (the instruction boundary, immediates, extension words, branch
+// displacements, coprocessor operand words).  These states only stay put
+// while a word they need is not queued; with fewer than two words queued
+// and none on the way, the sequencer is starved (the fetch_lazy guard).
+wire pipe_consumer = (state == S_FETCH && !stopped) || state == S_IMM || state == S_EA || state == S_EA_FULL ||
+                     state == S_EA_IND || state == S_BCC || state == S_TRAPCC || state == S_LINK || state == S_CAS2_0 ||
+                     state == S_CPBCC2 || state == S_CPDBCC2 || state == S_CPTRAP2 || state == S_CP_ISTREAM ||
+                     state == S_CPXEA;
 
 // interrupt processing in progress (masks IPEND)
 wire exc_is_irq_active = (state == S_EXC0 || state == S_EXC1 || state == S_EXC2 || state == S_EXC3 || state == S_IACK) && exc_is_irq;
 assign halted = halted_r;
 assign dbg_pc = pc_i;
-assign dbg_vec = exc_vec;
-assign dbg_epc = exc_pc;
-assign dbg_esr = exc_sr;
-assign dbg_ir  = ir;
-assign dbg_ea  = ea;
-assign dbg_isp = isp_q;
-assign dbg_trace = {7'd0, dbg_inst, irq_pend, pq_v[1:0], ra_a, sr_s, sr_m, rf_wact, rf_waddr, rf_we, state, isp_q, rf_a, ea};
 assign dbg_sr = sr;
 assign dbg_state = state;
 
@@ -509,7 +544,7 @@ always @* begin
 		S_PACK, S_PACK2, S_PACK3: begin ra_a = {ir[3], ir[2:0]}; ra_b = {ir[3], ir[11:9]}; end
 		S_LINK, S_LINK2, S_LINK3, S_UNLK, S_UNLK2, S_UNLK3, S_MOVE_USP: ra_a = {1'b1, ir[2:0]};
 		S_MOVEP0, S_MOVEP1, S_MOVEP2, S_MOVEP3: begin ra_a = {1'b1, ir[2:0]}; ra_b = {1'b0, ir[11:9]}; end
-		S_DBCC, S_CPDBCC, S_CPDBCC2: ra_a = {1'b0, ir[2:0]};
+		S_DBCC, S_CPDBCC, S_CPDBCC2, S_CPSCC2: ra_a = {1'b0, ir[2:0]};
 		S_CP2, S_CP3, S_CP4, S_CP5, S_CP6, S_CP7, S_CP8, S_CP10, S_CPREG, S_CPCTRL, S_CPCTRL2, S_CPTOS, S_CPEAX,
 		S_CPXFER, S_CPXFER2, S_CPXFER3, S_CPMULT, S_CPMULT2, S_CPMULT3,
 		S_CPSAVE0, S_CPSAVE1, S_CPREST0, S_CPREST1: begin
@@ -533,7 +568,7 @@ end
 // STATUS / REFILL (asserted from falling edges, UM 12.7.1)
 //---------------------------------------------------------------------------
 reg status_n_r, refill_n_r;
-always @(negedge clk) begin
+always @(negedge clk) if (ce_f) begin
 	status_n_r <= rst ? 1'b1 : ~(status_p | halted_r);
 	refill_n_r <= rst ? 1'b1 : ~refill_p;
 end
@@ -578,7 +613,7 @@ end
 // the sequencer
 //---------------------------------------------------------------------------
 integer k;
-always @(posedge clk) begin
+always @(posedge clk) if (ce) begin
 	// per-clock defaults
 	pop_n = 2'd0;
 	flush_req = 1'b0;
@@ -591,9 +626,13 @@ always @(posedge clk) begin
 	sp_we <= 1'b0;
 	d_stb <= 1'b0;
 	d_rmc_release <= 1'b0;
+	d_cancel <= 1'b0;
+	d_unhold <= 1'b0;
 	i_stb <= 1'b0;
 	op_req <= 1'b0;
 	dbg_inst <= 1'b0;
+	tm_md <= 2'd0;
+	tm_flush <= 1'b0;
 	reg_we <= 1'b0;
 	cacr_ci <= 1'b0; cacr_cei <= 1'b0; cacr_cd <= 1'b0; cacr_ced <= 1'b0;
 	md_start <= 1'b0;
@@ -603,6 +642,7 @@ always @(posedge clk) begin
 	if (status_cnt != 2'd0) status_cnt <= status_cnt - 2'd1;
 
 	if (rst) begin
+		tm_pop <= 2'd0;
 		state <= S_RESET0;
 		sr <= `SR_RESET;
 		vbr <= 32'd0;
@@ -611,8 +651,10 @@ always @(posedge clk) begin
 		sfc <= 3'd0; dfc <= 3'd0;
 		pq_v <= 6'd0; pq_f <= 6'd0; pq_n <= 3'd0;
 		scan_pc <= 32'd0; fetch_pc <= 32'd0; fetch_skip <= 1'b0; fetch_out <= 2'd0;
-		fetch_disc <= 2'd0; fetch_hold <= 1'b1;
+		fetch_disc <= 2'd0; fetch_hold <= 1'b1; stop_wait <= 6'd0; due_v <= 1'b0;
 		trace_pend <= 1'b0; late_fault_pend <= 1'b0; stream_fault_pend <= 1'b0;
+		lf_fa <= 32'd0; lf_dob <= 32'd0; lf_ssw <= 9'd0; exc_late <= 1'b0;
+		exc_held <= 11'd0; d_cancel <= 1'b0; d_unhold <= 1'b0;
 		stopped <= 1'b0; halted_r <= 1'b0;
 		reset_drive <= 1'b0; rst_cnt <= 10'd0;
 		ipend_r <= 1'b0;
@@ -640,7 +682,7 @@ always @(posedge clk) begin
 		sh_wait <= 1'b0;
 		g_sext <= 1'b0; g_bitop <= 1'b0; g_shift <= 1'b0; g_move_mem <= 1'b0; g_dstrd <= 1'b0; nx <= S_FETCH;
 		rte_fake <= 1'b0; rte_fake_data <= 32'd0; rerun_merge <= 1'b0; exc_active <= 1'b0;
-		cpu_flt_ill <= 1'b0; cpu_flt_fline <= 1'b0; iack_pc_i <= 1'b0;
+		cpu_flt_ill <= 1'b0; cpu_flt_fline <= 1'b0; iack_pc_i <= 1'b0; iack_cpmid <= 1'b0;
 		cp_id <= 3'd0; cp_resp <= 16'd0; cp_cond <= 1'b0; cp_len <= 8'd0; cp_pos <= 8'd0; cp_dr <= 1'b0;
 		cp_ca <= 1'b0; cp_pcbit <= 1'b0; cp_base <= 32'd0; cp_kind <= 4'd0;
 		md_div <= 1'b0; md_sign <= 1'b0; md_a <= 32'd0; md_hi <= 32'd0; md_lo <= 32'd0;
@@ -649,27 +691,47 @@ always @(posedge clk) begin
 		rf_waddr <= 4'd0; rf_wact <= 2'd1; rf_wdata <= 32'd0; sp_sel <= 2'd0; sp_wdata <= 32'd0;
 	end else begin
 		//---------------------------------------------------------- events from the memory system
-		if (d_late_fault) begin
-			// a posted write failed: taken at the next safe point (UM 8.1.2)
-			late_fault_pend <= 1'b1;
-			exc_fa <= f_addr; exc_dob <= f_dob;
-			exc_ssw <= {4'd0, 3'b000, 1'b1, f_rm, f_rw, f_size, 1'b0, f_fc};   // DF RM RW SIZE 0 FC
-		end
+		// (a failed posted write, d_late_fault, is handled after the states)
 		ipend_r <= irq_pend && !exc_is_irq_active;
 
 		//---------------------------------------------------------- the states
 		`include "core/ap030_exec.vh"
 
-		//---------------------------------------------------------- double bus fault
-		// a frame write of a bus/address error exception failed on the bus
-		// (posted writes report late): the processor halts (UM 8.1.2, 7.5.4)
-		if (d_late_fault && exc_active && exc_busfault) begin
-			late_fault_pend <= 1'b0;
-			halted_r <= 1'b1;
-			state <= S_HALT;
+		//---------------------------------------------------------- posted write faults
+		// A posted write that failed is a bus error taken at the next
+		// instruction boundary (UM 8.1.2), with a short bus fault frame
+		// built from its record (exc_late_fault).  Only a frame write of a
+		// bus/address error exception failing is a double bus fault and
+		// halts (UM 7.5.4, 8.1.2): such an exception waits in S_EXCW until
+		// the writes posted before it have completed, so a write fault seen
+		// while it stacks (exc_active) is one of its own frame writes.  A
+		// fault of an earlier write is kept and taken after the exception
+		// in progress, as a bus error of its own; its frame then lies on
+		// top and the handler sees it first, before the later fault.
+		if (d_late_fault) begin
+			if (exc_active && exc_busfault) begin
+				late_fault_pend <= 1'b0;
+				halted_r <= 1'b1;
+				state <= S_HALT;
+			end else if ((state == S_EXCW && exc_late) || (state == S_FETCH && late_fault_pend)) begin
+				// a write fault is being taken and the write behind it
+				// failed too: stack the later one first and keep the earlier
+				// one pending, so that the earlier frame lies on top and the
+				// faulted writes are rerun in program order
+				exc_fa <= f_addr; exc_dob <= f_dob;
+				exc_ssw[8:0] <= {1'b1, f_rm, f_rw, f_size, 1'b0, f_fc};
+				if (state == S_EXCW) begin lf_fa <= exc_fa; lf_dob <= exc_dob; lf_ssw <= exc_ssw[8:0]; end
+				late_fault_pend <= 1'b1;
+			end else begin
+				late_fault_pend <= 1'b1;
+				lf_fa <= f_addr; lf_dob <= f_dob;
+				lf_ssw <= {1'b1, f_rm, f_rw, f_size, 1'b0, f_fc};   // DF RM RW SIZE 0 FC
+			end
 		end
 
 		//---------------------------------------------------------- prefetch and pipe maintenance
+		tm_pop <= pop_n;
+		if (flush_req || pipe_load) begin tm_flush <= 1'b1; due_v <= 1'b0; end
 		if (flush_req) begin
 			pq_v <= 6'd0; pq_f <= 6'd0; pq_n <= 3'd0;
 			scan_pc <= flush_pc;
@@ -679,6 +741,20 @@ always @(posedge clk) begin
 			fetch_out <= fetch_out - {1'b0, i_ack | i_fault};
 			fetch_disc <= fetch_out - {1'b0, i_ack | i_fault};
 			refill_p <= 1'b1;
+			// Ordinary branches preserve the program function code. Issue
+			// their target fetch with the redirect, retaining the discard
+			// count for older requests. Exception/RTE/SR changes use the
+			// existing path so their new program space is selected first.
+			if ((state == S_BCC || state == S_JMP || state == S_RTS2 ||
+			     state == S_RTD2 || state == S_DBCC) && i_ready &&
+			    (fetch_out - {1'b0, i_ack | i_fault} != 2'd2) &&
+			    !halted_r && !fetch_hold) begin
+				i_stb <= 1'b1;
+				i_addr <= {flush_pc[31:2], 2'b00};
+				i_fc <= fc_prog;
+				fetch_pc <= {flush_pc[31:2], 2'b00} + 32'd4;
+				fetch_out <= fetch_out - {1'b0, i_ack | i_fault} + 2'd1;
+			end
 		end else if (pipe_load) begin
 			// RTE: stages C and B from the frame, fetching resumes behind them
 			begin : pipe_preload
@@ -702,6 +778,8 @@ always @(posedge clk) begin
 				reg [5:0] nv, nf;
 				reg [2:0] nn;
 				reg ret, disc_now;
+				reg due_now;
+				reg [31:0] due_at;
 				reg [1:0] out_after, disc_after, live;
 				integer j;
 				ret = i_ack | i_fault;                    // a fetch returns this clock
@@ -730,8 +808,28 @@ always @(posedge clk) begin
 				pq_n <= nn;
 				fetch_disc <= disc_after;
 				// another longword when the queue has room for everything in flight
-				// and the memory system can take it (two fetches at most)
-				if (out_after != 2'd2 && i_ready && !halted_r && !fetch_hold && (nn + {live, 1'b0} <= 3'd4)) begin
+				// and the memory system can take it (two fetches at most); with
+				// fetch_lazy only when two words or fewer are left, not past the
+				// pipeline model's stop point (a stop is on a branch whose words are
+				// queued and which flushes the queue) and not before the model has
+				// scanned.  Should the sequencer wait 63 clocks for a word that is
+				// neither queued nor on the way, the stop and the scan wait are
+				// ignored, so no model input can hang the processor; a stop that
+				// holds while the sequencer has its words (a long instruction
+				// before the branch) is kept
+				if (fetch_lazy && pipe_consumer && (pop_n == 2'd0) && (nn + {live, 1'b0} < 3'd2)) begin
+					if (!stop_starve) stop_wait <= stop_wait + 6'd1;
+				end else stop_wait <= 6'd0;
+				// the model decides at the consumption where this fetch became
+				// due (Hatari fetches there, its scan two words ahead)
+				due_now = nn + {live, 1'b0} <= (fetch_lazy ? 3'd2 : 3'd4);
+				due_at  = due_v ? due_scan : scan_pc + {29'd0, pop_n, 1'b0};
+				if (due_now && !due_v) begin due_v <= 1'b1; due_scan <= due_at; end
+				if (out_after != 2'd2 && i_ready && !halted_r && !fetch_hold && due_now &&
+				    (!fetch_lazy || stop_starve ||
+				     ((!fetch_stop_v || (due_at + 32'd2 < fetch_stop)) &&
+				      (!fetch_scan_v || (fetch_scan_to >= ((fetch_pc < due_at + 32'd4) ? fetch_pc : due_at + 32'd4)))))) begin
+					due_v <= 1'b0;
 					i_stb <= 1'b1;
 					i_addr <= fetch_pc;
 					i_fc <= fc_prog;

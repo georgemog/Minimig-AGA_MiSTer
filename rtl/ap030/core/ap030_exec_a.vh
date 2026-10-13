@@ -61,10 +61,13 @@ S_DWAIT: begin
 		// interrupt vector: supplied, autovector, or spurious (bus error)
 		d_iack <= 1'b0;
 		// a coprocessor busy/not-ready service stacks the instruction's own
-		// address so that it restarts (UM 10.4.3); otherwise the next one
+		// address so that it restarts (UM 10.4.3); a come-again null
+		// primitive with IA stacks a coprocessor mid-instruction frame, whose
+		// RTE reads the response CIR again (UM 10.4.8); otherwise the next one
 		exc_go(d_iack_berr ? `VEC_SPURIOUS : (d_avec ? (`VEC_AUTOVEC + {5'd0, exc_ilvl}) : d_rdata[7:0]),
-		       `FMT_NORMAL, iack_pc_i ? pc_i : scan_pc, 32'd0);
+		       iack_cpmid ? `FMT_CPMID : `FMT_NORMAL, iack_pc_i ? pc_i : scan_pc, iack_cpmid ? pc_i : 32'd0);
 		iack_pc_i <= 1'b0;
+		iack_cpmid <= 1'b0;
 		exc_is_irq <= 1'b1;
 		if (exc_ilvl == 3'd7) irq_taken7 <= 1'b1;
 	end else if (rte_fake || d_ack) begin : deliver
@@ -94,7 +97,9 @@ S_DWAIT: begin
 			DW_FRAME: begin fr[cnt[4:0]] <= data; cnt <= cnt + 8'd1; end
 			default: ;
 		endcase
-		state <= dw_ret;
+		if (dw_ret == S_MOVE_DEA) begin
+			ea_sel <= 1'b1; ea_ret <= S_MOVE_WR; state <= S_EA;
+		end else state <= dw_ret;
 	end else if (d_fault) begin
 		if (exc_busfault) begin
 			// UM 7.5.4: double bus fault
@@ -110,6 +115,13 @@ S_DWAIT: begin
 			// counts as emulated when DF is cleared (UM 8.2.2)
 			exc_data_fault(1'b0, d_rmc ? RK_RMW : d_rw ? RK_READ : RK_WRITE, S_DWAIT);
 		end
+	end else if (d_held && late_fault_pend) begin
+		// a posted write failed and this access waits behind it: suspend the
+		// instruction here (UM 8.1.2); exception processing, the RTE's frame
+		// loads and IACK cannot be suspended, they go on and the fault is
+		// taken at the next boundary
+		if (exc_active || exc_busfault || d_iack) d_unhold <= 1'b1;
+		else exc_held_fault;
 	end
 end
 
@@ -127,7 +139,9 @@ S_IMM: begin : imm_state
 		else src <= {16'd0, w0};
 		pop(two ? 2'd2 : 2'd1);
 		imm_tgt <= 1'b1;
-		state <= imm_ret;
+		if (imm_ret == S_MOVE_DEA) begin
+			ea_sel <= 1'b1; ea_ret <= S_MOVE_WR; state <= S_EA;
+		end else state <= imm_ret;
 	end
 end
 
@@ -137,27 +151,27 @@ S_EA: begin : ea_state
 	bytes = size_bytes(g_size, ea_regn == 3'd7);
 	ea_pc <= ea_pcrel;          // the reads that follow use program space for PC-relative modes
 	case (ea_mode)
-		3'b010: begin ea <= rf_a; state <= ea_ret; end
+		3'b010: begin ea_ready(rf_a); end
 		3'b011: begin
-			ea <= rf_a; wreg({1'b1, ea_regn}, rf_a + bytes); state <= ea_ret;
+			ea_ready(rf_a); wreg({1'b1, ea_regn}, rf_a + bytes);
 			// a register destination that is this base register sees the update
 			if (g_dstk == DK_REG && g_dreg == {1'b1, ea_regn}) dst <= rf_a + bytes;
 		end
 		3'b100: begin
-			ea <= rf_a - bytes; wreg({1'b1, ea_regn}, rf_a - bytes); state <= ea_ret;
+			ea_ready(rf_a - bytes); wreg({1'b1, ea_regn}, rf_a - bytes);
 			if (g_dstk == DK_REG && g_dreg == {1'b1, ea_regn}) dst <= rf_a - bytes;
 			// MOVE An,-(An) stores the initial value of An: the source is read
 			// before the destination address is formed (WinUAE 68030 cputest)
 		end
 		3'b101: begin
 			if (!w0_v) ; else if (w0_f) exc_stream_fault(1'b0, 1'b0);
-			else begin ea <= rf_a + sext16(w0); pop(2'd1); state <= ea_ret; end
+			else begin ea_ready(rf_a + sext16(w0)); pop(2'd1); end
 		end
 		3'b110: begin
 			if (!w0_v) ; else if (w0_f) exc_stream_fault(1'b0, 1'b0);
 			else if (!w0[8]) begin
-				ea <= rf_a + sext8(w0[7:0]) + index_val(rf_c, w0);
-				pop(2'd1); state <= ea_ret;
+				ea_ready(rf_a + sext8(w0[7:0]) + index_val(rf_c, w0));
+				pop(2'd1);
 			end else begin
 				tmp <= w0[7] ? 32'd0 : rf_a;
 				tmp2 <= w0[6] ? 32'd0 : index_val(rf_c, w0);
@@ -169,21 +183,21 @@ S_EA: begin : ea_state
 			case (ea_regn)
 				3'b000: begin
 					if (!w0_v) ; else if (w0_f) exc_stream_fault(1'b0, 1'b0);
-					else begin ea <= sext16(w0); pop(2'd1); state <= ea_ret; end
+					else begin ea_ready(sext16(w0)); pop(2'd1); end
 				end
 				3'b001: begin
 					if (!have2) ; else if (pipe_faulted(1'b1)) exc_stream_fault(1'b1, 1'b0);
-					else begin ea <= {w0, w1}; pop(2'd2); state <= ea_ret; end
+					else begin ea_ready({w0, w1}); pop(2'd2); end
 				end
 				3'b010: begin
 					if (!w0_v) ; else if (w0_f) exc_stream_fault(1'b0, 1'b0);
-					else begin ea <= scan_pc + sext16(w0); pop(2'd1); state <= ea_ret; end
+					else begin ea_ready(scan_pc + sext16(w0)); pop(2'd1); end
 				end
 				3'b011: begin
 					if (!w0_v) ; else if (w0_f) exc_stream_fault(1'b0, 1'b0);
 					else if (!w0[8]) begin
-						ea <= scan_pc + sext8(w0[7:0]) + index_val(rf_c, w0);
-						pop(2'd1); state <= ea_ret;
+						ea_ready(scan_pc + sext8(w0[7:0]) + index_val(rf_c, w0));
+						pop(2'd1);
 					end else begin
 						tmp <= w0[7] ? 32'd0 : scan_pc;
 						tmp2 <= w0[6] ? 32'd0 : index_val(rf_c, w0);
@@ -215,8 +229,7 @@ S_EA_FULL: begin : ea_full
 		if (sub[5:4] == 2'b10) pop(2'd1);
 		else if (sub[5:4] == 2'b11) pop(2'd2);
 		if (sub[2:0] == 3'b000) begin
-			ea <= tmp + bd + tmp2;
-			state <= ea_ret;
+			ea_ready(tmp + bd + tmp2);
 		end else begin
 			// memory indirect: preindexed unless IS=1 or I/IS[2]=1 (postindexed)
 			tmp <= tmp + bd + ((!sub[6] && !sub[2]) ? tmp2 : 32'd0);
@@ -239,8 +252,7 @@ S_EA_IND: begin : ea_ind_blk
 	else begin
 		if (sub[1:0] == 2'b10) pop(2'd1);
 		else if (sub[1:0] == 2'b11) pop(2'd2);
-		ea <= ea + od + ((!sub[6] && sub[2]) ? tmp2 : 32'd0);
-		state <= ea_ret;
+		ea_ready(ea + od + ((!sub[6] && sub[2]) ? tmp2 : 32'd0));
 	end
 end
 
@@ -519,10 +531,16 @@ S_STOP: begin
 	state <= S_FETCH;
 end
 S_RESETI: begin
-	// UM 7.8: RESET drives the pin for 512 clocks; the CPU's own state is untouched
-	if (!reset_drive) begin reset_drive <= 1'b1; rst_cnt <= 10'd511; end
-	else if (rst_cnt != 10'd0) rst_cnt <= rst_cnt - 10'd1;
-	else begin reset_drive <= 1'b0; finish; end
+	// UM 7.8: RESET drives the pin for 512 clocks; the CPU's own state is
+	// untouched.  The bus is idle for the whole pulse (Figure 7-65: the
+	// external devices are being reset): prefetching stops at once, and the
+	// pin is driven once the fetches already requested have returned and
+	// the posted writes have completed (bus_quiet); fetching resumes after.
+	fetch_hold <= 1'b1;
+	if (!reset_drive) begin
+		if (fetch_hold && fetch_out == 2'd0 && bus_quiet) begin reset_drive <= 1'b1; rst_cnt <= 10'd511; end
+	end else if (rst_cnt != 10'd0) rst_cnt <= rst_cnt - 10'd1;
+	else begin reset_drive <= 1'b0; fetch_hold <= 1'b0; finish; end
 end
 S_TRAP: exc_go(`VEC_TRAP + {4'd0, ir[3:0]}, `FMT_NORMAL, scan_pc, 32'd0);
 S_BKPT: begin

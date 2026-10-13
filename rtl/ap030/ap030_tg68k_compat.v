@@ -216,13 +216,22 @@ wire  [7:0] dbg_state, dbg_vec;
 wire [15:0] dbg_esr, dbg_ir, dbg_sr;
 wire        dbg_inst;
 wire [127:0] dbg_trace;
+// AP68030 no longer exports the exception and per-clock trace views; the
+// capture records them as zero
+assign dbg_vec = 8'd0;
+assign dbg_epc = 32'd0;
+assign dbg_esr = 16'd0;
+assign dbg_ir  = 16'd0;
+assign dbg_ea  = 32'd0;
+assign dbg_isp = 32'd0;
+assign dbg_trace = 128'd0;
 
 
 // cpu_wrapper's busstate treats program space as an instruction fetch (the
 // turbo chip/kick paths and the controllers' instruction caches), so the
 // PC-relative operand reads keep the data function code here
 ap030_top #(.PCREL_PROGRAM_SPACE(0)) cpu (
-	.clk(clk_cpu),
+	.clk(clk_cpu), .ce(1'b1),
 	.a(a), .fc(cfc), .siz(siz), .rw(rw), .rmc_n(), .as_n(as_n), .ds_n(ds_n), .dben_n(),
 	.ecs_n(), .ocs_n(), .ciout_n(ciout_n), .cbreq_n(cbreq_n), .bus_oe(),
 	.d_o(d_o), .d_oe(d_oe), .d_i(d_i),
@@ -232,10 +241,16 @@ ap030_top #(.PCREL_PROGRAM_SPACE(0)) cpu (
 	.br_n(1'b1), .bg_n(), .bgack_n(1'b1),
 	.ipl_n(ipl), .ipend_n(), .reset_n_i(nreset_c[2]), .reset_n_oe(reset_n_oe),
 	.cdis_n(1'b1), .mmudis_n(1'b1), .refill_n(), .status_n(),
+	// internal Fast RAM port unused (FAST_PORT = 0): Fast RAM stays on STERM
+	.fast_req(), .fast_addr(), .fast_fc(), .fast_rw(), .fast_ci(), .fast_burst(),
+	.fast_be(), .fast_wdata(), .fast_match(1'b0), .fast_ready(1'b0),
+	.fast_valid(1'b0), .fast_last(1'b0), .fast_word(2'd0), .fast_rdata(32'd0),
 	.dbg_pc(dbg_pc), .dbg_sr(dbg_sr), .dbg_state(dbg_state), .dbg_inst(dbg_inst), .dbg_halted(cpu_halted),
-	.dbg_vec(dbg_vec), .dbg_epc(dbg_epc), .dbg_esr(dbg_esr), .dbg_ir(dbg_ir), .dbg_ea(dbg_ea), .dbg_isp(dbg_isp), .dbg_trace(dbg_trace),
+	// no external prefetch pipeline model
+	.tm_pop(), .tm_md(), .tm_q(), .tm_qn(), .tm_scan(), .tm_flush(),
+	.fetch_stop_v(1'b0), .fetch_stop(32'd0), .fetch_scan_v(1'b0), .fetch_scan_to(32'd0),
 	.dbg_vbr(vbr), .dbg_cacr(cacr), .dbg_cache_clear(cache_clear),
-	.snoop_we(snp_we_c), .snoop_addr(snp_addr_c), .nmi_vec_nocache(1'b1)
+	.snoop_we(snp_we_c), .snoop_addr(snp_addr_c), .nmi_vec_nocache(1'b1), .fetch_lazy(1'b0)
 );
 
 //---------------------------------------------------------------------------
